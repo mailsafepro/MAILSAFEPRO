@@ -4,7 +4,7 @@ services:
     name: email-validation-api
     runtime: docker
     plan: free
-    region: frankfurt  # Puedes cambiar a oregon, singapore, etc.
+    region: frankfurt
     dockerfilePath: ./Dockerfile
     dockerContext: .
     envVars:
@@ -13,6 +13,10 @@ services:
         value: production
       - key: DOCKER_ENV
         value: "0"
+      - key: TITLE
+        value: Email Validation API
+      - key: VERSION
+        value: 2.5.0
       
       # DNS Configuration
       - key: DNS_NAMESERVERS
@@ -28,6 +32,18 @@ services:
       - key: MAX_VALIDATION_TIME
         value: "30.0"
       
+      # Timeouts
+      - key: VALIDATION_MX_LOOKUP_TIMEOUT
+        value: "3.0"
+      - key: VALIDATION_SMTP_TIMEOUT
+        value: "5.0"
+      - key: VALIDATION_MAX_RETRIES
+        value: "2"
+      - key: MX_LOOKUP_TIMEOUT
+        value: "3"
+      - key: SMTP_TIMEOUT
+        value: "5"
+      
       # Redis
       - key: REDIS_URL
         fromService:
@@ -39,82 +55,133 @@ services:
       - key: LOG_LEVEL
         value: INFO
       
-      # SMTP
-      - key: SMTP_TIMEOUT
-        value: "10.0"
+      # Frontend & Base URL
+      - key: FRONTEND_URL
+        value: https://tudominio.com
+      - key: BASE_URL
+        value: https://email-validation-api.onrender.com
       
-      # Stripe (configurar manualmente en dashboard)
+      # Stripe (configurar manualmente en dashboard después del deploy)
       - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLIC_KEY
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
       - key: STRIPE_PREMIUM_PLAN_ID
-        sync: false
+        value: price_1RaL1JEO1eR6oKf4agwyVZFr
       - key: STRIPE_ENTERPRISE_PLAN_ID
-        sync: false
+        value: price_def456
+      - key: STRIPE_SUCCESS_URL
+        value: https://tudominio.com/dashboard/billing/success
+      - key: STRIPE_CANCEL_URL
+        value: https://tudominio.com/dashboard/billing
       
-      # JWT (auto-generado seguro)
+      # SMTP Configuration
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USERNAME
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: FROM_EMAIL
+        value: u1792719752@gmail.com
+      - key: FROM_NAME
+        value: Email Validation API
+      - key: SMTP_SENDER
+        value: noreply@yourapi.com
+      - key: SMTP_USE_TLS
+        value: "true"
+      - key: SMTP_MAX_RETRIES
+        value: "2"
+      - key: SMTP_PORTS
+        value: "[587,465,25]"
+      
+      # JWT & Security (auto-generado seguro)
+      - key: JWT_SECRET
+        generateValue: true
       - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: API_KEY_SECRET
+        generateValue: true
+      - key: API_KEY_METRICS
+        generateValue: true
+      - key: SECURITY_WEBHOOK_SECRET
         generateValue: true
       - key: JWT_ALGORITHM
         value: HS256
+      - key: JWT_ISSUER
+        value: email-api
+      - key: JWT_AUDIENCE
+        value: email-clients
       - key: JWT_EXPIRATION_MINUTES
         value: "30"
       
-      # Security
+      # Docs Authentication
+      - key: DOCS_USER
+        value: admin
+      - key: DOCS_PASSWORD
+        sync: false
+      
+      # Security Settings
+      - key: SECURITY_HTTPS_REDIRECT
+        value: "true"
+      - key: SECURITY_CORS_ORIGINS
+        value: '["https://tudominio.com","http://localhost:5173"]'
       - key: CORS_ORIGINS
-        value: "*"  # Cambiar en producción
+        value: "*"
       - key: HTTPS_REDIRECT
         value: "true"
+      
+      # Validation Settings
+      - key: IDN_SUPPORT
+        value: "true"
+      - key: ADVANCED_MX_CHECK
+        value: "true"
+      - key: DISPOSABLE_DOMAINS
+        value: '["mailinator.com","10minutemail.com","guerrillamail.com"]'
+      
+      # Rate Limits
+      - key: RATE_LIMIT_CONFIG
+        value: '{"FREE":{"count":100,"window":3600},"PREMIUM":{"count":5000,"window":3600},"ENTERPRISE":{"count":100000,"window":3600}}'
+      
+      # Dynamic Quotas
+      - key: DYNAMIC_QUOTAS
+        value: '{"threshold_percent":0.8,"adjustment_factor":1.2}'
+      
+      # Features
+      - key: ENABLE_TEST_ROUTES
+        value: "false"
+      - key: ENABLE_PREMIUM_FEATURES
+        value: "true"
+      
+      # Cache
+      - key: CACHE_TTL
+        value: "3600"
       
       # Monitoring
       - key: METRICS_ENABLED
         value: "true"
+      
+      # Jobs & Webhooks
+      - key: JOB_WORKER_CONCURRENCY
+        value: "20"
+      - key: JOB_RESULTS_PAGE_SIZE
+        value: "1000"
+      - key: WEBHOOK_REPLAY_WINDOW_SEC
+        value: "300"
+      - key: WEBHOOK_TIMEOUT_SEC
+        value: "10"
+      - key: WEBHOOK_MAX_RETRIES
+        value: "8"
+      
+      # Testing
+      - key: TESTING
+        value: "0"
     
     healthCheckPath: /healthcheck
-    autoDeploy: true
-
-  # Background Worker Service
-  - type: worker
-    name: email-validation-worker
-    runtime: docker
-    plan: free
-    region: frankfurt
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m app.jobs.jobs_worker
-    dockerContext: .
-    envVars:
-      # Environment
-      - key: ENVIRONMENT
-        value: production
-      - key: DOCKER_ENV
-        value: "0"
-      
-      # DNS Configuration
-      - key: DNS_NAMESERVERS
-        value: 8.8.8.8,8.8.4.4
-      - key: DNS_TIMEOUT
-        value: "5.0"
-      - key: VALIDATION_DNS_TIMEOUT
-        value: "5.0"
-      - key: RETRY_ATTEMPTS
-        value: "2"
-      - key: RETRY_MAX_BACKOFF
-        value: "1.0"
-      - key: MAX_VALIDATION_TIME
-        value: "30.0"
-      
-      # Redis
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: email-validation-redis
-          property: connectionString
-      
-      # Logging
-      - key: LOG_LEVEL
-        value: INFO
-    
     autoDeploy: true
 
   # Redis Service
@@ -122,4 +189,4 @@ services:
     name: email-validation-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
-    ipAllowList: []  # Permite acceso desde todos los servicios de Render
+    ipAllowList: []

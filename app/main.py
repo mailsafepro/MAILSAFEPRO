@@ -48,20 +48,42 @@ async def lifespan(app: FastAPI):
     logger.info(f"🚀 Starting API server in {settings.environment.value} environment")
 
     if settings.testing_mode:
-        # Skip external initializations during testing
         yield
         return
 
     try:
+        # Conexión Redis con configuración más robusta
         app.state.redis = Redis.from_url(
             str(settings.redis_url),
             decode_responses=True,
-            socket_timeout=5,
+            socket_timeout=10,
+            socket_connect_timeout=10,
             socket_keepalive=True,
+            retry_on_timeout=True,
+            health_check_interval=30
         )
-        await app.state.redis.ping()
-        logger.success("✅ Redis connection successful")
+        
+        # Intentar conectar con reintentos
+        max_retries = 10
+        retry_delay = 3
+        
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Attempting Redis connection (attempt {attempt}/{max_retries})...")
+                await app.state.redis.ping()
+                logger.success(f"✅ Redis connection successful on attempt {attempt}")
+                break
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(f"Redis connection failed (attempt {attempt}/{max_retries}): {str(e)}")
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.critical(f"❌ Failed to connect to Redis after {max_retries} attempts")
+                    raise ConnectionError(f"Could not connect to Redis: {str(e)}")
+        
         await initialize_services(app)
+        
     except Exception as e:
         logger.critical(f"❌ Failed to initialize services: {str(e)}")
         raise
@@ -109,7 +131,7 @@ app = FastAPI(
         "API robusta y segura para validación y verificación de correos electrónicos.\n"
         "Soporta verificación individual y en lote, detección de brechas, y autenticación JWT.\n"
         "Cumple con GDPR y dispone de planes de pago flexibles.\n\n"
-        "**Status del sistema:** [status.tudominio.com](https://tustatuspage.statuspage.io)"
+        "**Status del sistema:** [status.tudominio.com](https://mailsafepro1.statuspage.io)"
     ),
     version="2.5.0",
     docs_url="/docs" if settings.documentation.enabled else None,

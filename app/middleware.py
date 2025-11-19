@@ -78,14 +78,20 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # 1) Excluir endpoint de prueba
         if request.url.path == "/validate/email-test":
             return await call_next(request)
-
+        
+        # 1.5) Excluir healthchecks de validaciones y redirects
+        health_paths = {"/healthcheck", "/auth/health/auth", "/validate/health", "/health"}
+        if request.url.path in health_paths:
+            response = await call_next(request)
+            return response
+        
         # 2) Validación Content-Type
         if request.method in ("POST", "PUT", "PATCH"):
             invalid = await self._validate_content_type(request)
             if invalid:
                 return invalid
-
-        # 3) Forzar HTTPS en producción (excepto /metrics)
+        
+        # 3) Forzar HTTPS en producción (excepto /metrics y healthchecks ya excluidos)
         if (
             self.environment == EnvironmentEnum.PRODUCTION
             and request.url.scheme != "https"
@@ -93,7 +99,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         ):
             url_https = str(request.url.replace(scheme="https"))
             return RedirectResponse(url=url_https, status_code=307)
-
+        
         # 4) Validación XSS por patrón
         xss_resp = await self._check_xss(request)
         if xss_resp:
@@ -104,13 +110,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 component="security_middleware"
             )
             return xss_resp
-
+        
         # 5) Continuar
         response = await call_next(request)
-
+        
         # 6) Agregar cabeceras de seguridad con CSP diferenciada
         self._add_security_headers(response, request.url.path)
         return response
+
 
     async def _validate_content_type(self, request: Request) -> Optional[JSONResponse]:
         content_type = (request.headers.get("Content-Type") or "").lower()
@@ -207,9 +214,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         # CSP para /redoc
         csp_redoc = (
             "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline' 'unsafe-eval' cdn.jsdelivr.net cdn.redoc.ly; "
-            "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net fonts.googleapis.com; "
-            "font-src 'self' fonts.gstatic.com fonts.googleapis.com data:; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://cdn.redoc.ly; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com https://fonts.googleapis.com data:; "
             "img-src 'self' data: https: https://fastapi.tiangolo.com https://cdn.redoc.ly; "
             "connect-src 'self' https://api.redoc.ly; "
             "worker-src 'self' blob:; "
@@ -217,6 +224,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "object-src 'none'; "
             "base-uri 'self'"
         )
+
     
         # Seleccionar CSP según ruta
         if path == "/docs":

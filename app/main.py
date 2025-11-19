@@ -198,8 +198,6 @@ async def redis_check(request: Request):
 # Middleware setup
 app.add_middleware(LoggingMiddleware)
 app.add_middleware(RateLimitMiddleware)
-if settings.security.https_redirect:
-    app.add_middleware(HTTPSRedirectMiddleware)
 app.add_middleware(SecurityHeadersMiddleware, environment=settings.environment.value)
 app.add_middleware(HistoricalKeyMiddleware)
 app.add_middleware(

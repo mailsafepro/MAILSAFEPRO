@@ -51,49 +51,71 @@ async def lifespan(app: FastAPI):
         yield
         return
 
+    # Redis connection con soporte SSL
+    app.state.redis = None
+    
     try:
-        # Conexión Redis con configuración más robusta
-        app.state.redis = Redis.from_url(
-            str(settings.redis_url),
-            decode_responses=True,
-            socket_timeout=10,
-            socket_connect_timeout=10,
-            socket_keepalive=True,
-            retry_on_timeout=True,
-            health_check_interval=30
-        )
+        redis_url = str(settings.redis_url)
+        logger.info(f"Attempting to connect to Redis...")
+        
+        # Configurar SSL si la URL usa rediss://
+        connection_kwargs = {
+            "decode_responses": True,
+            "socket_timeout": 10,
+            "socket_connect_timeout": 10,
+            "socket_keepalive": True,
+            "retry_on_timeout": True,
+            "health_check_interval": 30
+        }
+        
+        # Si usa rediss:// (SSL), añadir configuración SSL
+        if redis_url.startswith("rediss://"):
+            import ssl
+            connection_kwargs["ssl_cert_reqs"] = ssl.CERT_NONE  # Desactiva validación de certificado
+            logger.info("Using SSL connection for Redis")
+        
+        redis_client = Redis.from_url(redis_url, **connection_kwargs)
         
         # Intentar conectar con reintentos
-        max_retries = 10
+        max_retries = 5
         retry_delay = 3
         
         for attempt in range(1, max_retries + 1):
             try:
-                logger.info(f"Attempting Redis connection (attempt {attempt}/{max_retries})...")
-                await app.state.redis.ping()
+                logger.info(f"Redis connection attempt {attempt}/{max_retries}...")
+                await asyncio.wait_for(redis_client.ping(), timeout=10)
+                app.state.redis = redis_client
                 logger.success(f"✅ Redis connection successful on attempt {attempt}")
+                await initialize_services(app)
                 break
-            except Exception as e:
+            except asyncio.TimeoutError:
                 if attempt < max_retries:
-                    logger.warning(f"Redis connection failed (attempt {attempt}/{max_retries}): {str(e)}")
-                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    logger.warning(f"Redis timeout on attempt {attempt}, retrying in {retry_delay}s...")
                     await asyncio.sleep(retry_delay)
                 else:
-                    logger.critical(f"❌ Failed to connect to Redis after {max_retries} attempts")
-                    raise ConnectionError(f"Could not connect to Redis: {str(e)}")
-        
-        await initialize_services(app)
+                    logger.error("⚠️ Redis connection timeout - running without cache")
+            except Exception as e:
+                if attempt < max_retries:
+                    logger.warning(f"Redis error on attempt {attempt}: {str(e)}, retrying...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(f"⚠️ Redis connection failed: {str(e)} - running without cache")
         
     except Exception as e:
-        logger.critical(f"❌ Failed to initialize services: {str(e)}")
-        raise
+        logger.warning(f"⚠️ Redis initialization failed: {str(e)} - running without cache")
 
     try:
         yield
     finally:
         logger.info("🛑 Shutting down API server...")
-        await shutdown_services(app)
+        if app.state.redis:
+            try:
+                await shutdown_services(app)
+                await app.state.redis.close()
+            except Exception:
+                pass
         logger.success("👋 API server stopped cleanly")
+
 
 async def initialize_services(app: FastAPI):
     from app.smtp import smtp_breaker

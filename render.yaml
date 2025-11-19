@@ -1,12 +1,13 @@
 services:
-  # Redis Service (PRIMERO)
+  # Redis Service en Frankfurt
   - type: redis
     name: email-validation-redis
     plan: free
+    region: frankfurt
     maxmemoryPolicy: allkeys-lru
     ipAllowList: []
 
-  # Main API Service
+  # API Service
   - type: web
     name: email-validation-api
     runtime: docker
@@ -51,9 +52,12 @@ services:
       - key: SMTP_TIMEOUT
         value: "5"
       
-      # Redis (CONFIGURAR MANUALMENTE después)
+      # Redis
       - key: REDIS_URL
-        sync: false
+        fromService:
+          type: redis
+          name: email-validation-redis
+          property: connectionString
       
       # Logging
       - key: LOG_LEVEL
@@ -65,7 +69,7 @@ services:
       - key: BASE_URL
         value: https://email-validation-api.onrender.com
       
-      # Stripe
+      # Stripe (configurar manualmente después)
       - key: STRIPE_SECRET_KEY
         sync: false
       - key: STRIPE_PUBLIC_KEY

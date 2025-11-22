@@ -165,62 +165,166 @@ uvicorn app.main:app --port 8000
 python -m app.jobs.jobs_worker
 
 
-Descripción general
+Descripción General - MailSafePro Email Validation API
+Validación y Análisis Profesional de Emails
 
 Servicio profesional de validación y análisis de direcciones de email con enfoque en calidad de datos, seguridad y reputación, que incluye verificación sintáctica conforme a estándares de correo y comprobaciones de entrega.​
-Integra señales de riesgo multi-factor y consultas de breaches mediante Have I Been Pwned para enriquecer la decisión, posicionándose como alternativa avanzada frente a proveedores del mercado.​
 
-Soporta autenticación de múltiples capas con API Keys y JWT Bearer, con scopes granulares y metadatos de plan embebidos en los tokens para control fino de acceso.​
-Incluye revocación segura y listas negras sincronizadas, además de validaciones estrictas del token conforme a las recomendaciones del estándar JWT.​]
+Integra señales de riesgo multi-factor y consultas de breaches mediante Have I Been Pwned para enriquecer la decisión, posicionándose como alternativa avanzada frente a proveedores del mercado.
 
-Permite generar y nombrar múltiples API Keys por usuario para aislar integraciones y rotarlas con período de gracia sin interrupciones de servicio.​
-Las claves heredan de forma automática permisos y límites del plan vigente, facilitando la administración por entorno y caso de uso.​]
+Infraestructura en Producción
 
-Integra Stripe para suscripciones y cambios de plan en tiempo real, utilizando sesiones de Checkout y webhooks firmados para garantizar autenticidad de eventos.​
-Expone endpoints para consultar el plan actual y el próximo cobro, actualizando de inmediato el acceso y los scopes tras los eventos de Stripe.​]
+Desplegado en Render (Frankfurt, EU) con Redis colocado en la misma región para minimizar latencia, garantizando tiempos de respuesta óptimos y cumplimiento GDPR.​
 
-Implementa rate limiting por usuario e IP con umbrales para acciones sensibles (checkout, login, creación de claves) y control de consumo por plan.​
-Mantiene cuotas diarias/mensuales diferenciadas por tier (FREE, PREMIUM, ENTERPRISE) y detiene el uso cuando se alcanzan los límites definidos.​]
+Monitoreo 24/7 con Better Uptime que supervisa tres endpoints críticos cada 3 minutos: healthcheck general, autenticación y validación, con status page público en mailsafepro.betteruptime.com para transparencia total ante usuarios.​
 
-Valida sintaxis de email conforme a RFC 5322 y semántica básica de dirección, constituyendo la primera barrera de calidad.​
-Analiza DNS y seguridad de dominio con señales de SPF, DKIM y DMARC para evaluar autenticación de origen y alineación de políticas.​
-Detecta dominios desechables y direcciones de rol, emite sugerencias de typos y calcula un puntaje de riesgo multi-factor para apoyar decisiones de aceptación o revisión.​]
+Documentación interactiva en producción con Swagger UI y ReDoc accesibles públicamente, utilizando CDN estable y Content Security Policy optimizada para garantizar carga sin errores y máxima compatibilidad.​
 
-Verifica existencia de buzón vía SMTP a nivel de servidor para aumentar la certeza de entregabilidad, respetando el comportamiento y respuestas del protocolo.​
-Integra Have I Been Pwned para comprobar presencia en breaches conocidos y enriquecer el perfil de riesgo del email consultado.​]
+Autenticación y Control de Acceso
 
-Permite crear jobs asíncronos que procesan cientos o miles de emails sin bloquear la solicitud, con cola persistente y procesamiento ordenado.​
-Ofrece ingesta por lista directa o token de carga de archivo, modos de sandbox o validación con DNS/SMTP, y resultados paginados para consultas eficientes.​
-Admite concurrencia interna configurable y especificación de callback con firma y timestamp para notificaciones de finalización, con idempotencia en la creación de jobs.​]
+Soporta autenticación de múltiples capas con API Keys y JWT Bearer, con scopes granulares y metadatos de plan embebidos en los tokens para control fino de acceso.
 
-Emite notificaciones firmadas HMAC mediante Stripe-Signature compatible para garantizar integridad y autenticidad en callbacks.​
-Soporta claves de idempotencia en solicitudes sensibles para evitar duplicados en reintentos de clientes o ante fallos transitorios.​]
+Incluye revocación segura y listas negras sincronizadas, además de validaciones estrictas del token conforme a las recomendaciones del estándar JWT con verificación de iss, aud, nbf y exp.
 
-Usa Redis para caché y coordinación, con scripts Lua para operaciones atómicas que preservan la consistencia bajo alta concurrencia.​
-Cachea resultados de validaciones para reducir latencia y llamadas, con expiración y políticas que equilibran frescura y rendimiento.​]
+Gestión Multi-Key
+
+Permite generar y nombrar múltiples API Keys por usuario para aislar integraciones y rotarlas con período de gracia sin interrupciones de servicio.
+
+Las claves heredan de forma automática permisos y límites del plan vigente, facilitando la administración por entorno y caso de uso.
+
+Integración Stripe
+
+Integra Stripe para suscripciones y cambios de plan en tiempo real, utilizando sesiones de Checkout y webhooks firmados para garantizar autenticidad de eventos.
+
+Expone endpoints para consultar el plan actual y el próximo cobro, actualizando de inmediato el acceso y los scopes tras los eventos de Stripe.
+
+Rate Limiting y Cuotas
+
+Implementa rate limiting por usuario e IP con umbrales para acciones sensibles (checkout, login, creación de claves) y control de consumo por plan.
+
+Mantiene cuotas diarias/mensuales diferenciadas por tier (FREE, PREMIUM, ENTERPRISE) y detiene el uso cuando se alcanzan los límites definidos.
+
+Validación Sintáctica y de Dominio
+
+Valida sintaxis de email conforme a RFC 5322 y semántica básica de dirección, constituyendo la primera barrera de calidad.
+
+Analiza DNS y seguridad de dominio con señales de SPF, DKIM y DMARC para evaluar autenticación de origen y alineación de políticas.
+
+Detecta dominios desechables y direcciones de rol, emite sugerencias de typos y calcula un puntaje de riesgo multi-factor para apoyar decisiones de aceptación o revisión.
+
+Verificación SMTP y Breaches
+
+Verifica existencia de buzón vía SMTP a nivel de servidor para aumentar la certeza de entregabilidad, respetando el comportamiento y respuestas del protocolo.
+
+Integra Have I Been Pwned para comprobar presencia en breaches conocidos y enriquecer el perfil de riesgo del email consultado.
+
+Procesamiento Batch Asíncrono
+
+Permite crear jobs asíncronos que procesan cientos o miles de emails sin bloquear la solicitud, con cola persistente y procesamiento ordenado.
+
+Ofrece ingesta por lista directa o token de carga de archivo, modos de sandbox o validación con DNS/SMTP, y resultados paginados para consultas eficientes.
+
+Admite concurrencia interna configurable y especificación de callback con firma y timestamp para notificaciones de finalización, con idempotencia en la creación de jobs.
+
+Webhooks y Callbacks Seguros
+
+Emite notificaciones firmadas HMAC mediante Stripe-Signature compatible para garantizar integridad y autenticidad en callbacks.
+
+Soporta claves de idempotencia en solicitudes sensibles para evitar duplicados en reintentos de clientes o ante fallos transitorios.
+
+Redis y Caché Inteligente
+
+Usa Redis para caché y coordinación, con scripts Lua para operaciones atómicas que preservan la consistencia bajo alta concurrencia.
+
+Cachea resultados de validaciones para reducir latencia y llamadas, con expiración y políticas que equilibran frescura y rendimiento.
+
+Observabilidad y Monitoreo
 
 Incluye logging estructurado con correlation IDs y métricas de ejecución para seguimiento extremo a extremo y análisis de rendimiento.​
-Expone indicadores de profundidad de cola, estados de jobs y tiempos de validación por plan para monitoreo operativo y capacidad de reacción.​]
 
-Ofrece validación individual en tiempo real con tiempos de respuesta en segundos y detalle de proveedor, reputación y señales de seguridad.​
-Permite cargas en lote (CSV/TXT/ZIP) con resultados consolidados, totales válidos/inválidos y tiempos por dirección para facilitar decisiones masivas.​
+Expone indicadores de profundidad de cola, estados de jobs y tiempos de validación por plan para monitoreo operativo y capacidad de reacción.
 
-Centraliza configuración por ambientes y valida secretos críticos, incluyendo timeouts de DNS/MX y credenciales de SMTP.​
-Brinda ajustes dinámicos por plan para tamaño de lotes y concurrencia, alineando rendimiento con garantías de cuota y fair use.​]
+Healthchecks especializados con soporte HEAD y GET para compatibilidad con monitores externos, excluyendo redirecciones HTTPS en endpoints de salud para garantizar respuestas 200 OK directas.​
 
-Define contratos claros para validación individual, avanzada y batch, con respuestas JSON que incluyen IDs, timestamps y metadatos técnicos.​
-Incluye estructuras de autenticación con JWT y manejo de claves que reflejan scopes y plan del cliente.​]
+Seguridad en Producción
+
+Content Security Policy (CSP) diferenciado por ruta: restrictivo para endpoints de API, permisivo para documentación permitiendo CDN de Swagger/ReDoc, bloqueando XSS y scripts maliciosos.​
+
+Middleware de seguridad multicapa con validación de Content-Type, detección de patrones XSS, headers de seguridad (HSTS, X-Frame-Options, Referrer-Policy) y redirect HTTPS selectivo excluyendo healthchecks.​
+
+Modos de Uso
+
+Ofrece validación individual en tiempo real con tiempos de respuesta en segundos y detalle de proveedor, reputación y señales de seguridad.
+
+Permite cargas en lote (CSV/TXT/ZIP) con resultados consolidados, totales válidos/inválidos y tiempos por dirección para facilitar decisiones masivas.
+
+Configuración y Ajustes
+
+Centraliza configuración por ambientes y valida secretos críticos, incluyendo timeouts de DNS/MX y credenciales de SMTP.
+
+Brinda ajustes dinámicos por plan para tamaño de lotes y concurrencia, alineando rendimiento con garantías de cuota y fair use.
+
+Contratos de API
+
+Define contratos claros para validación individual, avanzada y batch, con respuestas JSON que incluyen IDs, timestamps y metadatos técnicos.
+
+Incluye estructuras de autenticación con JWT y manejo de claves que reflejan scopes y plan del cliente.
+
+Manejo de Errores
 
 Estandariza respuestas de error con tipo, título, estado HTTP, detalle, trace_id y timestamp para diagnóstico consistente.​
-Registra intentos fallidos relevantes para seguridad y control de abuso, integrándolos a la capa de observabilidad para mitigaciones.​]
 
-POST /v1/jobs para crear el job, seguido de GET /v1/jobs/{job_id} para estado y GET /v1/jobs/{job_id}/results para resultados paginados y consumo eficiente.​
-La autenticación usa Bearer con scopes granulares para creación, lectura y obtención de resultados, segregando permisos por rol y plan.​]
+Registra intentos fallidos relevantes para seguridad y control de abuso, integrándolos a la capa de observabilidad para mitigaciones.
 
-Tu API combina verificación sintáctica y de transporte con señales de autenticación de dominio y de brechas para una calificación de riesgo robusta.​
-La arquitectura asíncrona con Redis y webhooks firmados, más planes con cuotas y límites por acción, habilita escalabilidad con gobernanza y trazabilidad de nivel empresarial.]
+Flujo Batch
 
-Incluye además un exhaustivo mecanismo de monitoreo y observabilidad mediante logging estructurado, métricas y trazabilidad, así como una arquitectura escalable basada en procesamiento asíncrono con Redis y manejo eficiente de jobs para soportar cargas masivas. Todo ello hace que el SDK no solo sea una herramienta de validación sino una plataforma integral para la gestión segura y eficiente de emails en entornos profesionales.
+POST /v1/jobs para crear el job, seguido de GET /v1/jobs/{job_id} para estado y GET /v1/jobs/{job_id}/results para resultados paginados y consumo eficiente.
+
+La autenticación usa Bearer con scopes granulares para creación, lectura y obtención de resultados, segregando permisos por rol y plan.
+
+Ventaja Competitiva
+
+Tu API combina verificación sintáctica y de transporte con señales de autenticación de dominio y de brechas para una calificación de riesgo robusta.
+
+La arquitectura asíncrona con Redis y webhooks firmados, más planes con cuotas y límites por acción, habilita escalabilidad con gobernanza y trazabilidad de nivel empresarial.
+
+Infraestructura de producción empresarial con despliegue en región EU (Frankfurt), monitoreo proactivo 24/7 con Better Uptime, status page público con 99.9% uptime, documentación interactiva accesible y healthchecks optimizados para máxima disponibilidad.​
+
+Plataforma Integral
+
+Incluye además un exhaustivo mecanismo de monitoreo y observabilidad mediante logging estructurado, métricas y trazabilidad, así como una arquitectura escalable basada en procesamiento asíncrono con Redis y manejo eficiente de jobs para soportar cargas masivas.​
+
+Status page transparente que permite a usuarios verificar el estado en tiempo real de todos los servicios (API, autenticación, validación) con historial de uptime de 90 días y notificaciones automáticas de incidentes.​
+
+Todo ello hace que el servicio no solo sea una herramienta de validación sino una plataforma integral para la gestión segura y eficiente de emails en entornos profesionales con garantías de disponibilidad y observabilidad de nivel empresarial.
+
+Hemos desarrollado un SDK en JavaScript/TypeScript para MailSafePro que ofrece una integración completa y profesional para la validación de emails, tanto individual como en batch. El SDK incorpora autenticación dual con API Keys y JWT, control avanzado de tasas (rate limiting), reintentos automáticos con backoff exponencial, y manejo detallado de errores con clases tipadas. Además, integra funcionalidades enfocadas en seguridad y rendimiento, como verificación SMTP, detección de dominios desechables, uso de Redis para caché y coordinación, y soporte tanto para entornos Node.js como navegadores modernos con un bundle CDN optimizado. Todo ello respaldado por un robusto sistema de tests con más del 85% de cobertura, documentación completa y despliegue listo para producción.
+
+Se ha desarrollado un SDK en Python para MailSafePro que ofrece una integración profesional y completa para la validación de emails con funcionalidades avanzadas de seguridad. Este SDK soporta autenticación dual con API Key y JWT (con auto-refresco dinámico), validación exhaustiva que abarca formato, DNS, SMTP, y detección de emails desechables, además de controles de seguridad como detección de spam traps, comprobación de brechas, y detección de emails de rol. Permite la validación individual y por batch de miles de correos, con soporte para carga de archivos CSV y TXT. Incorpora reintentos automáticos con backoff exponencial para gestionar límites de tasa y errores temporales, manejo detallado y tipado de errores, y proporciona resultados ricos en datos con puntuaciones de riesgo, calidad y acciones sugeridas. Cuenta con completas anotaciones de tipos para mejor autocompletado y robustez en el desarrollo. Todo respaldado por documentación integral, ejemplos prácticos y un sistema de tests con alta cobertura, listo para integración en entornos de producción seguros y confiables.
+
+MailSafePro Zapier Integration Una integración robusta y segura diseñada para equipos de alto rendimiento. Construida sobre nuestra API v1, ofrece capacidades completas de validación dentro del ecosistema no-code:
+
+Triggers y Acciones Disponibles:
+
+Validate Email Premium: Acción de alta precisión que devuelve score de riesgo, detección de trampas de spam (honeypots), validación SMTP profunda y análisis de DNS/MX.
+Batch Validation: Procesa miles de correos asíncronamente con manejo automático de reintentos y estados.
+Get Usage: Consulta programática de cuotas, proyecciones de consumo y alertas de límites.
+Características Técnicas:
+
+Manejo inteligente de Rate Limiting con Backoff Exponencial.
+Deduplicación de peticiones para optimizar tu cuota.
+Tiempos de respuesta optimizados (<500ms) para flujos críticos.
+
+🔗 Enlaces de Producción
+API en producción: https://email-validation-api-jlra.onrender.com
+
+Documentación Swagger: https://email-validation-api-jlra.onrender.com/docs
+
+Documentación ReDoc: https://email-validation-api-jlra.onrender.com/redoc
+
+Status page público: https://mailsafepro.betteruptime.com
+
+Región: Frankfurt (EU) - GDPR Compliant
 
 | Capacidad                                    | Tu API | ZeroBounce | NeverBounce | Kickbox | Verifalia |
 | -------------------------------------------- | ------ | ---------- | ----------- | ------- | --------- |

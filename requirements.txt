@@ -22,7 +22,7 @@ zxcvbn-python==4.4.24
 
 # Email Validation
 dnspython==2.0.0
-aiodns==3.1.1
+aiodns==3.5.0
 pycares==4.4.0
 idna==3.6
 tldextract==5.1.1

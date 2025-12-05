@@ -4,7 +4,7 @@
 # =============================================================================
 # Stage 1: Builder - Install dependencies and build
 # =============================================================================
-FROM python:3.11-slim as builder
+FROM python:3.14-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -30,7 +30,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
 # =============================================================================
 # Stage 2: Runtime - Minimal production image
 # =============================================================================
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \

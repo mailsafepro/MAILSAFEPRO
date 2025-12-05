@@ -96,7 +96,7 @@ opentelemetry-exporter-otlp==1.22.0
 
 # Structured Logging
 structlog==24.1.0
-python-json-logger==2.0.7
+python-json-logger==4.0.0
 
 # Advanced Error Handling
 tenacity==8.2.3

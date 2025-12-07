@@ -17,11 +17,12 @@ from redis.asyncio import Redis
 import hashlib # Added from instruction's snippet
 import hmac # Added from instruction's snippet
 import httpx # Added from instruction's snippet
+import json  # Standard json for response parsing
 
 from app.logger import logger
 from app.config import get_settings # Kept get_settings as it's used, instruction's snippet had 'settings' directly
 from app.metrics import metrics_recorder # Kept from original, not in instruction's snippet
-from app.json_utils import dumps as json_dumps, loads as json_loads_recorder # Replaced orjson
+from app.json_utils import dumps as json_dumps, loads as json_loads  # Replaced orjson
 from app.routes.validation_routes import validation_engine, validation_service
 from app.utils import increment_usage
 from app.jobs.webhooks import send_webhook
@@ -175,8 +176,8 @@ async def process_job(redis, payload: Dict[str, Any]) -> None:
     # evento started
     try:
         metrics_recorder.record_job_event(plan, "started")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Metrics recording failed: {e}")
 
     # Estado inicial: processing
     meta = await _set_meta(redis, job_id, {"status": "processing", "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at))})
@@ -194,8 +195,8 @@ async def process_job(redis, payload: Dict[str, Any]) -> None:
         try:
             metrics_recorder.observe_job_duration(plan, time.time() - started_at)
             metrics_recorder.record_job_event(plan, "failed")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Metrics recording failed: {e}")
         return
 
     # Chequeo de cuota diaria
@@ -206,8 +207,8 @@ async def process_job(redis, payload: Dict[str, Any]) -> None:
         try:
             metrics_recorder.observe_job_duration(plan, time.time() - started_at)
             metrics_recorder.record_job_event(plan, "failed")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Metrics recording failed: {e}")
         return
 
     # Concurrencia interna del worker
@@ -239,8 +240,8 @@ async def process_job(redis, payload: Dict[str, Any]) -> None:
                 # usa el recorder existente para validations_total y validation_duration
                 from app.metrics import track_validation_metrics  # si ya tienes decorador, emite directamente:
                 metrics_recorder.record_validation("batch", result, plan, dur)  # método ya presente en metrics.py
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Validation metrics recording failed: {e}")
             return r
 
     # Procesar en lotes y paginar
@@ -272,8 +273,8 @@ async def process_job(redis, payload: Dict[str, Any]) -> None:
     # Incrementar uso al final
     try:
         await increment_usage(redis, creator, total)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Usage increment failed: {e}")
 
     finished_at_ts = time.time()
     finished_at_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(finished_at_ts))
@@ -293,8 +294,8 @@ async def process_job(redis, payload: Dict[str, Any]) -> None:
     try:
         metrics_recorder.observe_job_duration(plan, finished_at_ts - started_at)
         metrics_recorder.record_job_event(plan, "completed")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Metrics recording failed: {e}")
 
     # Webhook final (completed)
     await _send_job_webhook(redis, creator, callback_url, "job.completed", job_id, final_counts, finished_at_iso, metadata)
@@ -307,8 +308,8 @@ async def _queue_depth_sampler(redis):
         try:
             depth = await redis.llen(JOBS_QUEUE_KEY)
             metrics_recorder.set_job_queue_depth(JOBS_QUEUE_KEY, depth)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Queue depth sampling failed: {e}")
         await asyncio.sleep(QUEUE_SAMPLER_INTERVAL)
 
 async def run_worker_forever() -> None:
@@ -323,15 +324,15 @@ async def run_worker_forever() -> None:
                 try:
                     depth = await redis.llen(JOBS_QUEUE_KEY)
                     metrics_recorder.set_job_queue_depth(JOBS_QUEUE_KEY, depth)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Queue depth check failed: {e}")
                 continue
             _, raw = item
             try:
                 depth = await redis.llen(JOBS_QUEUE_KEY)
                 metrics_recorder.set_job_queue_depth(JOBS_QUEUE_KEY, depth)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Queue depth check failed: {e}")
             try:
                 payload = json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw))
             except Exception:

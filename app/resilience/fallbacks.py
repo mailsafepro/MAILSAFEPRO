@@ -140,7 +140,7 @@ class SMTPFallback:
             deliverable = dns_result["has_mx"]
             confidence = "medium" if dns_result["confidence"] == "high" else "low"
             
-            logger.info(f"Using MX fallback for {email}")
+            logger.info(f"Using MX fallback for {mask_email(email)}")
             
             return {
                 "smtp_verified": False,

@@ -1257,8 +1257,34 @@ smtp_checker = smtpchecker
 # Wrappers async seguros
 # ---------------------------
 
-async def check_smtp_mailbox_safe(email: str, max_total_time: Optional[int] = None, do_rcpt: bool = False) -> Tuple[Optional[bool], str]:
-    max_total_time = max_total_time or config.smtp_max_total_time
+MAX_SMTP_TIMEOUT_ABSOLUTE = 30  # ✅ Límite máximo: 30 segundos
+
+async def check_smtp_mailbox_safe(
+    email: str, 
+    max_total_time: Optional[int] = None,
+    do_rcpt: bool = False
+) -> Tuple[Optional[bool], str]:
+    """
+    Safe SMTP check with absolute timeout protection.
+    
+    Even if called internally with high timeout, this enforces a maximum.
+    """
+    # ✅ Aplicar timeout del config
+    requested_timeout = max_total_time or config.smtp_max_total_time
+    
+    # ✅ NUEVO: Límite máximo absoluto
+    max_total_time = min(requested_timeout, MAX_SMTP_TIMEOUT_ABSOLUTE)
+    
+    # ✅ Log si se intenta timeout muy alto
+    if requested_timeout > MAX_SMTP_TIMEOUT_ABSOLUTE:
+        logger.warning(
+            "SMTP timeout capped",
+            extra={
+                "requested": requested_timeout,
+                "applied": max_total_time,
+                "email": email[:30],
+            }
+        )
     try:
         result_or_coro = smtp_checker.check_smtp_mailbox(email, do_rcpt)
         if inspect.isawaitable(result_or_coro):
@@ -1410,9 +1436,6 @@ async def detect_catch_all_domain(domain: str, mx_records: Optional[List[MXRecor
         result['method'] = 'error'
         logger.debug(f"Catch-all check error for {domain_lower}: {e}")
         return result
-
-
-
 
 
 # ---------------------------

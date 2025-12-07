@@ -177,16 +177,16 @@ async def create_job(
     
     try:
         metrics_recorder.record_arq_job_event("default", "validate_batch_task", "queued")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Metrics recording failed (non-critical): {e}")
     await redis.set(progress_key, json.dumps({"status": "queued", "queued_at": _now_iso()}), ex=RETENTION_SECONDS_DEFAULT)
     if x_idempotency_key:
         await redis.setex(f"idempotency:{_hash_idempotency(x_idempotency_key)}", IDEMPOTENCY_TTL, job_id)
     logger.info(f"Job queued {job_id} by {meta['creator']}")
     try:
         metrics_recorder.record_job_event(getattr(current, "plan", "FREE"), "queued")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Metrics recording failed (non-critical): {e}")
     return JSONResponse(status_code=status.HTTP_201_CREATED, content={"job_id": job_id, "status": "queued", "created_at": meta["created_at"]})
 
 @router.get(

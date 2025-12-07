@@ -36,6 +36,8 @@ import aiodns
 from ipwhois import IPWhois
 from app.validation import get_mx_records, dns_resolver, check_smtp_mailbox_safe
 from app.cache import UnifiedCache, AsyncTTLCache  # Unified Cache + AsyncTTLCache
+from app.pii_mask import mask_email
+
 
 async def query_mx_with_pref(domain: str):
     mx = await dns_resolver.query_mx_async(domain)
@@ -51,8 +53,6 @@ class RedisLike(Protocol):
 
 if TYPE_CHECKING:
     from redis.asyncio import Redis as AsyncRedis  # opcional, solo tipos
-
-import os
 
 try:
     from prometheus_client import Counter, Histogram
@@ -87,9 +87,7 @@ class DNSRecordType(Enum):
     A = "A"
 
 
-# providers.py
-from dataclasses import dataclass
-import os
+# providers.py - ProviderConfig uses dataclass from line 22
 from app.config import settings  # Settings central
 
 @dataclass
@@ -1589,7 +1587,7 @@ class HaveIBeenPwnedChecker:
         import httpx
         
         email_lower = email.lower().strip()
-        logger.info(f"[HIBP] ✅ Starting HIBP check for {email_lower}")
+        logger.info(f"[HIBP] ✅ Starting HIBP check for {mask_email(email_lower)}")
         
         # ✅ Intentar obtener de Redis
         if redis:
@@ -1600,7 +1598,7 @@ class HaveIBeenPwnedChecker:
                     timeout=2
                 )
                 if cached:
-                    logger.info(f"[HIBP] Cache HIT for {email_lower}")
+                    logger.info(f"[HIBP] Cache HIT for {mask_email(email_lower)}")
                     data = json.loads(cached)
                     data["cached"] = True
                     return data

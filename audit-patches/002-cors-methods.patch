@@ -1,0 +1,23 @@
+--- a/app/main.py
++++ b/app/main.py
+@@ -660,10 +660,17 @@ instrument_app(app)
+ # ✅ Add CORS middleware
+ app.add_middleware(
+     FastAPICORSMiddleware,
+     allow_origins=settings.security.cors_origins,
+     allow_credentials=True,
+-    allow_methods=["*"],
+-    allow_headers=["*"],
++    # ⚠️ SECURITY FIX: Explicit method list instead of wildcard
++    # Wildcard allowed any HTTP method from allowed origins
++    allow_methods=[
++        "GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"
++    ],
++    # ⚠️ SECURITY FIX: Explicit header list with common headers
++    allow_headers=[
++        "Authorization", "Content-Type", "X-API-Key", "X-Request-ID",
++        "Accept", "Accept-Language", "Origin", "Cache-Control"
++    ],
+ )
+ 
+ # ✅ Add GZip compression

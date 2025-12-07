@@ -335,15 +335,16 @@ class EventProcessor:
         session_id = session_data.get("id")
         logger.info(f"Processing checkout.session.completed: {session_id}")
 
-        # ✅ NUEVO: Aceptar ambos modos (subscription y payment)
+        # Validate session mode - must be subscription for plan upgrades
         session_mode = session_data.get("mode")
         if session_mode not in ["subscription", "payment"]:
             logger.info(f"Skipping unsupported session mode: {session_mode}")
             return
 
-        # Verificar modo de suscripción
-        if session_data.get("mode") != "subscription":
-            logger.info(f"Skipping non-subscription session: {session_data.get('mode')}")
+        # Only process subscription sessions for plan upgrades
+        # Payment mode is for one-time purchases, not subscriptions
+        if session_mode != "subscription":
+            logger.info(f"Skipping non-subscription session: {session_mode}")
             return
 
         # ✅ NUEVO: Intentar obtener de Stripe, pero usar webhook data si falla
@@ -662,13 +663,15 @@ async def stripe_webhook(
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature")
 
-    # ✅ DESARROLLO: Skip validación de firma
-    is_dev = os.getenv("DOCKER_ENV") == "1"
+    # ⚠️ SECURITY FIX: Only skip signature in explicit test mode, never in dev
+    # Previous code bypassed validation when DOCKER_ENV=1 (vulnerability)
+    is_testing = os.getenv("TESTING") == "1"
 
-    if is_dev:
-        logger.warning("⚠️ DEVELOPMENT MODE: Skipping Stripe signature validation")
+    if is_testing and not sig_header:
+        logger.warning("⚠️ TEST MODE ONLY: Skipping Stripe signature validation")
         try:
             event = json.loads(payload.decode("utf-8"))
+            event["_unvalidated_test_mode"] = True  # Mark as unvalidated
         except Exception as e:
             logger.error(f"Invalid JSON payload: {e}")
             raise HTTPException(status_code=400, detail="Invalid JSON")

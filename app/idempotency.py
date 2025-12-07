@@ -62,8 +62,6 @@ async def get_idempotent_response(
             }
         
         created_at = data.get("created_at", time.time())
-        print(f"DEBUG: created_at type: {type(created_at)}, value: {created_at}")
-        print(f"DEBUG: time.time() type: {type(time.time())}, value: {time.time()}")
         age_seconds = time.time() - created_at
         
         logger.info(

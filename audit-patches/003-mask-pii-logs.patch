@@ -1,0 +1,24 @@
+--- a/app/auth.py
++++ b/app/auth.py
+@@ -264,8 +264,10 @@ async def create_user(redis: Redis, email: str, password: str, plan: str = "FRE
+     # ✅ Password Strength Check (zxcvbn)
+     results = zxcvbn(password)
+     if results["score"] < 3: # 0-4 scale, 3 is "safe"
+-        logger.warning(f"Weak password attempt for {email}: score {results['score']}")
++        # ⚠️ SECURITY FIX: Mask email to prevent PII in logs
++        masked_email = email[:3] + "***@***" if "@" in email else "***"
++        logger.warning(f"Weak password attempt for {masked_email}: score {results['score']}")
+         raise HTTPException(
+             status_code=status.HTTP_400_BAD_REQUEST,
+             detail=f"Password too weak. Suggestions: {', '.join(results['feedback']['suggestions'] or ['Use a stronger password'])}"
+@@ -802,7 +804,9 @@ async def login_web_user(
+         )
+ 
+         if not user:
+-            logger.warning(f"Login failed: User not found ({user_data.email})", security_event=True)
++            # ⚠️ SECURITY FIX: Mask email to prevent PII in logs
++            masked_email = user_data.email[:3] + "***@***" if "@" in user_data.email else "***"
++            logger.warning(f"Login failed: User not found ({masked_email})", security_event=True)
+             # Simulate password verification time to prevent timing attacks
+             pwd_context.verify("dummy_password", "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWrn3ILAWOi/lPa.U4Mc.Oq.p.h.m") 
+             raise invalid_credentials_exc

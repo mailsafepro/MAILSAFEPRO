@@ -84,7 +84,8 @@ services:
       - REDIS_URL=redis://redis:6379/0
       # =========== LOGGING ===========
       - LOG_LEVEL=DEBUG
-    ports: [ "8001:8001" ]
+    # ❌ ELIMINAR puerto 8001 - el worker NO es servidor HTTP
+    # ports: [ "8001:8001" ]
     volumes:
       - .:/app
     depends_on:
@@ -95,11 +96,15 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
+    
+    # ✅ HEALTHCHECK CORREGIDO: Verificar conexión a Redis
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:8001/metrics" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      test: ["CMD", "python", "-c", "import redis; r=redis.Redis.from_url('redis://redis:6379/0'); r.ping()"]
+      interval: 30s       # Cada 30 segundos (no necesita ser tan frecuente)
+      timeout: 10s        # Timeout generoso
+      retries: 5          # Más reintentos antes de marcar como unhealthy
+      start_period: 60s   # Tiempo inicial para que el worker arranque
+
 
   alertmanager:
     image: prom/alertmanager:latest

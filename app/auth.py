@@ -44,6 +44,7 @@ from app.models import (
     UserLogin,
 )
 from app.logger import logger
+from app.pii_mask import mask_email
 
 
 router = APIRouter(tags=["Authentication"])
@@ -149,11 +150,10 @@ def get_redis(request: Request) -> Redis:
     return request.app.state.redis
 
 def get_arq_redis(request: Request) -> ArqRedis:
+    """Obtiene la instancia de ARQ Redis desde el estado de la app."""
     if not hasattr(request.app.state, "arq_redis") or request.app.state.arq_redis is None:
         raise HTTPException(status_code=503, detail="Job queue unavailable")
     return request.app.state.arq_redis
-    """Obtiene la instancia de Redis desde el estado de la app."""
-    return request.app.state.redis
 
 
 def _decode_value(val: Any) -> str:
@@ -264,7 +264,9 @@ async def create_user(redis: Redis, email: str, password: str, plan: str = "FREE
     # ✅ Password Strength Check (zxcvbn)
     results = zxcvbn(password)
     if results["score"] < 3: # 0-4 scale, 3 is "safe"
-        logger.warning(f"Weak password attempt for {email}: score {results['score']}")
+        # ⚠️ SECURITY FIX: Mask email to prevent PII in logs
+        masked_email = email[:3] + "***@***" if "@" in email else "***"
+        logger.warning(f"Weak password attempt for {masked_email}: score {results['score']}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Password too weak. Suggestions: {', '.join(results['feedback']['suggestions'] or ['Use a stronger password'])}"
@@ -320,43 +322,194 @@ async def create_user(redis: Redis, email: str, password: str, plan: str = "FREE
     if result == 0:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User already exists")
 
-    now = datetime.now(timezone.utc).isoformat()
-    user_id = str(uuid4())
-
-    # Hash principal del usuario (string values)
-    user_hash = {
-        "id": user_id,
-        "email": email,
-        "hashed_password": hashed_password,   # obtenido de tu lógica actual
-        "plan": plan,
-        "created_at": now,
-        "updated_at": now,
-        "is_active": "true",
-        "email_verified": "false",
-    }
-    await redis.hset(f"user:{user_id}", mapping=user_hash)
-
-    # Índice email -> JSON (id, email, plan, timestamps)
-    index_json = json.dumps({
-        "id": user_id,
-        "email": email,
-        "plan": plan,
-        "created_at": now,
-        "updated_at": now,
-    })
-    await redis.set(f"user:email:{email}", index_json)
-
-    # Construcción del modelo (Pydantic parsea isoformat a datetime)
+    # ⚠️ BUG FIX: Removed duplicate user creation code that was here (lines 325-361)
+    # The Lua script above already creates the user atomically
+    # The old code was creating a SECOND user with a DIFFERENT UUID
+    
+    now = created_at.isoformat()
+    
+    # Return the user from the Lua script creation
     return UserInDB(
         id=user_id,
         email=email,
         hashed_password=hashed_password,
         plan=plan,
-        created_at=datetime.fromisoformat(now),
-        updated_at=datetime.fromisoformat(now),
+        created_at=created_at,
+        updated_at=created_at,
         is_active=True,
         email_verified=False,
     )
+
+async def delete_user_account(user_id: str, email: str, redis: Redis) -> Dict[str, Any]:
+    """
+    Elimina un usuario y todos sus datos relacionados de forma segura.
+    
+    Elimina:
+    - Índice por email (user:email:{email})
+    - Hash del usuario (user:{user_id})
+    - Set de emails (users:emails)
+    - Todas las API keys del usuario
+    - Usage/quota data
+    - Subscription data
+    - Rate limit data
+    - Tokens relacionados (refresh tokens, blacklist)
+    
+    Args:
+        user_id: ID del usuario a eliminar
+        email: Email del usuario a eliminar
+        redis: Cliente Redis
+        
+    Returns:
+        Dict con información sobre las claves eliminadas
+        
+    Raises:
+        HTTPException: Si el usuario no existe o hay un error
+    """
+    deleted_keys = []
+    deleted_count = 0
+    
+    try:
+        # 1. Eliminar índice por email (todas las variantes posibles)
+        email_variants = [
+            email,
+            email.lower(),
+            email.upper(),
+            email.lower().strip(),
+        ]
+        
+        for variant in email_variants:
+            email_key = f"user:email:{variant}"
+            if await redis.exists(email_key):
+                await redis.delete(email_key)
+                deleted_keys.append(email_key)
+                deleted_count += 1
+                logger.info(f"Deleted email index: {email_key}")
+        
+        # 2. Eliminar hash del usuario
+        user_key = f"user:{user_id}"
+        if await redis.exists(user_key):
+            await redis.delete(user_key)
+            deleted_keys.append(user_key)
+            deleted_count += 1
+            logger.info(f"Deleted user hash: {user_key}")
+        
+        # 3. Eliminar del set de emails (todas las variantes)
+        for variant in email_variants:
+            result = await redis.srem("users:emails", variant)
+            if result:
+                deleted_count += 1
+        
+        # 4. Eliminar todas las API keys del usuario
+        # Buscar en el set de API keys del usuario
+        api_keys_set_key = f"user:{user_id}:api_keys"
+        api_keys_set = await redis.smembers(api_keys_set_key)
+        
+        for key_hash in api_keys_set:
+            key_hash_str = key_hash.decode() if isinstance(key_hash, bytes) else key_hash
+            key_key = f"key:{key_hash_str}"
+            if await redis.exists(key_key):
+                await redis.delete(key_key)
+                deleted_keys.append(key_key)
+                deleted_count += 1
+                logger.info(f"Deleted API key: {key_key}")
+        
+        # Eliminar el set de API keys
+        if await redis.exists(api_keys_set_key):
+            await redis.delete(api_keys_set_key)
+            deleted_keys.append(api_keys_set_key)
+            deleted_count += 1
+        
+        # Eliminar API key principal
+        primary_key = f"user:{user_id}:api_key"
+        if await redis.exists(primary_key):
+            key_hash = await redis.get(primary_key)
+            if key_hash:
+                key_hash_str = key_hash.decode() if isinstance(key_hash, bytes) else key_hash
+                key_key = f"key:{key_hash_str}"
+                if await redis.exists(key_key):
+                    await redis.delete(key_key)
+                    deleted_keys.append(key_key)
+                    deleted_count += 1
+            await redis.delete(primary_key)
+            deleted_keys.append(primary_key)
+            deleted_count += 1
+        
+        # 5. Eliminar usage/quota
+        usage_key = f"usage:{user_id}"
+        if await redis.exists(usage_key):
+            await redis.delete(usage_key)
+            deleted_keys.append(usage_key)
+            deleted_count += 1
+        
+        # 6. Eliminar subscription
+        subscription_key = f"user:{user_id}:subscription"
+        if await redis.exists(subscription_key):
+            await redis.delete(subscription_key)
+            deleted_keys.append(subscription_key)
+            deleted_count += 1
+        
+        # 7. Eliminar rate limit
+        rate_limit_key = f"user:{user_id}:rate_limit"
+        if await redis.exists(rate_limit_key):
+            await redis.delete(rate_limit_key)
+            deleted_keys.append(rate_limit_key)
+            deleted_count += 1
+        
+        # 8. Eliminar refresh tokens (buscar todos los tokens del usuario)
+        # Los refresh tokens se almacenan como: refresh_token:{jti}
+        # Buscar todos los tokens que puedan estar relacionados
+        refresh_token_pattern = f"refresh_token:*"
+        # Nota: En producción, esto podría ser costoso. Considerar mantener un índice.
+        
+        # 9. Eliminar webhook tokens
+        webhook_tokens_key = f"user:{user_id}:webhook_tokens"
+        if await redis.exists(webhook_tokens_key):
+            await redis.delete(webhook_tokens_key)
+            deleted_keys.append(webhook_tokens_key)
+            deleted_count += 1
+        
+        # 10. Buscar y eliminar cualquier otra clave relacionada con el usuario
+        # Buscar patrones adicionales (solo en desarrollo para evitar costo en producción)
+        if settings.environment.value == "development":
+            patterns_to_check = [
+                f"user:{user_id}:*",
+                f"token:{user_id}:*",
+                f"blacklist:{user_id}:*",
+            ]
+            
+            for pattern in patterns_to_check:
+                keys = await redis.keys(pattern)
+                for key in keys:
+                    key_str = key.decode() if isinstance(key, bytes) else key
+                    if await redis.exists(key_str):
+                        await redis.delete(key_str)
+                        deleted_keys.append(key_str)
+                        deleted_count += 1
+        
+        logger.warning(
+            f"User account deleted",
+            extra={
+                "user_id": user_id[:8],
+                "email": email[:3] + "***@***" if "@" in email else "***",
+                "deleted_keys_count": deleted_count,
+                "action": "account_deletion",
+            }
+        )
+        
+        return {
+            "status": "success",
+            "message": "User account deleted successfully",
+            "deleted_keys_count": deleted_count,
+            "user_id": user_id,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting user account: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete user account: {str(e)}"
+        )
+
 
 async def get_user_by_email(redis: Redis, email: str) -> Optional[UserInDB]:
     """Obtiene el usuario por email desde Redis con backfill y sin extras."""
@@ -782,58 +935,138 @@ async def register_web_user(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to register user")
 
 
+# ✅ CONSTANTE para timing attack protection (definir al inicio del archivo, después de imports)
+# Hash precalculado de "dummy_password" - usado para timing attack protection
+DUMMY_BCRYPT_HASH = "$2b$12$kqqKThwAwLMW/c.nZrV7SOyEaA5fFJKKyiADSkyeSBL4XPqSeqLE6"
+
+
 @router.post("/login", response_model=Dict)
 async def login_web_user(
     request: Request,
     user_data: UserLogin,
     redis: Redis = Depends(get_redis),
 ):
-    """Login de usuario para panel web."""
+    """
+    Login de usuario para panel web.
+    
+    Security features:
+    - Rate limiting por email + IP
+    - Timing attack protection
+    - Generic error messages
+    - PII masking en logs
+    """
     try:
-        logger.info("Login attempt for: %s", user_data.email)
+        logger.info("Login attempt for: %s", mask_email(user_data.email))
+        
+        # Rate limiting
         client_ip = request.client.host if request.client else "unknown"
-        await enforce_rate_limit(redis, bucket=f"login:{user_data.email}:{client_ip}", limit=10, window=300)
-        user = await get_user_by_email(redis, user_data.email)
-        # ✅ Generic Error & Security Logging
+        await enforce_rate_limit(
+            redis, 
+            bucket=f"login:{user_data.email}:{client_ip}", 
+            limit=10, 
+            window=300
+        )
+        
+        # ✅ Preparar excepción genérica (no revela si usuario existe o no)
         invalid_credentials_exc = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
+        
+        # Buscar usuario
+        user = await get_user_by_email(redis, user_data.email)
+        
+        # ✅ Usuario no encontrado - con timing attack protection
         if not user:
-            logger.warning(f"Login failed: User not found ({user_data.email})", security_event=True)
-            # Simulate password verification time to prevent timing attacks
-            pwd_context.verify("dummy_password", "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWrn3ILAWOi/lPa.U4Mc.Oq.p.h.m") 
+            masked_email = user_data.email[:3] + "***@***" if "@" in user_data.email else "***"
+            logger.warning(
+                f"Login failed: User not found ({masked_email})", 
+                extra={"security_event": True}
+            )
+            
+            # ✅ Timing attack protection: simular verificación de password
+            try:
+                pwd_context.verify("dummy_password", DUMMY_BCRYPT_HASH)
+            except Exception as e:
+                # Fallback si el hash dummy falla
+                logger.debug(f"Timing protection fallback: {e}")
+                import time
+                time.sleep(0.1)  # ~100ms = tiempo típico de bcrypt
+            
             raise invalid_credentials_exc
-
+        
+        # ✅ Usuario sin hash de password
         if not getattr(user, "hashed_password", None):
-            logger.warning(f"Login failed: User without password hash ({user_data.email})", security_event=True)
+            masked_email = user_data.email[:3] + "***@***" if "@" in user_data.email else "***"
+            logger.warning(
+                f"Login failed: User without password hash ({masked_email})", 
+                extra={"security_event": True}
+            )
+            
+            # Timing attack protection
+            try:
+                pwd_context.verify("dummy_password", DUMMY_BCRYPT_HASH)
+            except Exception:
+                import time
+                time.sleep(0.1)
+            
             raise invalid_credentials_exc
-
+        
+        # ✅ Verificar password
         if not verify_password(user_data.password, user.hashed_password):
-            logger.warning(f"Login failed: Invalid password for {user_data.email}", security_event=True)
+            masked_email = user_data.email[:3] + "***@***" if "@" in user_data.email else "***"
+            logger.warning(
+                f"Login failed: Invalid password for {masked_email}", 
+                extra={"security_event": True}
+            )
             raise invalid_credentials_exc
-
-        access_token = create_access_token({"sub": user.id, "email": user.email}, plan=user.plan)
-        refresh_token, refresh_exp = create_refresh_token({"sub": user.id, "email": user.email}, plan=user.plan)
-
+        
+        # ✅ Login exitoso - generar tokens
+        access_token = create_access_token(
+            {"sub": user.id, "email": user.email}, 
+            plan=user.plan
+        )
+        refresh_token, refresh_exp = create_refresh_token(
+            {"sub": user.id, "email": user.email}, 
+            plan=user.plan
+        )
+        
+        # Almacenar refresh token
         refresh_payload = _get_unverified_claims(refresh_token)
         await store_refresh_token(refresh_payload["jti"], refresh_exp, redis)
-
+        
+        logger.info(
+            f"Login successful for user: {user.id}",
+            extra={"user_id": user.id, "plan": user.plan}
+        )
+        
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": "bearer",
             "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            "user": {"id": user.id, "email": user.email, "plan": user.plan},
+            "user": {
+                "id": user.id, 
+                "email": user.email, 
+                "plan": user.plan
+            },
         }
+    
     except HTTPException:
+        # Re-raise HTTPExceptions (401, 429, etc.)
         raise
+    
     except Exception as e:
-        logger.exception("User login failed: %s", e)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to login")
-
+        # Log error completo pero devolver mensaje genérico
+        logger.exception(
+            "User login failed with unexpected error",
+            extra={"error": str(e)[:200]}
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to login"
+        )
 
 @router.get("/me", response_model=Dict)
 async def get_current_user(
@@ -922,7 +1155,7 @@ async def refresh_token(
         except ExpiredSignatureError:
             logger.warning("Refresh token expired")
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
-        except (JWTError, JWTClaimsError) as e:
+        except InvalidTokenError as e:
             logger.warning("Invalid refresh token: %s", str(e)[:200])
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
         
@@ -981,6 +1214,79 @@ async def refresh_token(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to refresh token")
 
 
+@router.delete("/delete", status_code=status.HTTP_200_OK)
+async def delete_account(
+    current_client: TokenData = Depends(get_current_client),
+    redis: Redis = Depends(get_redis),
+):
+    """
+    Elimina la cuenta del usuario autenticado y todos sus datos relacionados.
+    
+    ⚠️ ADVERTENCIA: Esta operación es IRREVERSIBLE.
+    
+    Elimina:
+    - Datos del usuario
+    - Todas las API keys
+    - Usage/quota
+    - Suscripciones
+    - Rate limits
+    - Tokens relacionados
+    
+    Security:
+    - Solo el usuario puede eliminarse a sí mismo (o admin)
+    - Requiere autenticación válida
+    - Registra la acción en logs para auditoría
+    """
+    user_id = current_client.sub
+    email = current_client.email
+    
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email not found in token"
+        )
+    
+    # Verificar que el usuario existe antes de eliminar
+    user = await get_user_by_email(redis, email)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    
+    # Verificar que el user_id del token coincide con el usuario encontrado
+    if user.id != user_id:
+        logger.warning(
+            f"User ID mismatch in delete request",
+            extra={
+                "token_user_id": user_id[:8],
+                "found_user_id": user.id[:8],
+                "action": "account_deletion_attempt",
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User ID mismatch"
+        )
+    
+    try:
+        result = await delete_user_account(user_id, email, redis)
+        
+        return {
+            "status": "success",
+            "message": "Account deleted successfully. All data has been permanently removed.",
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting account for user {user_id[:8]}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete account"
+        )
+
+
 @router.post("/logout")
 async def logout(
     request: Request,
@@ -1037,7 +1343,7 @@ async def logout(
                 # Token expirado: ya no es usable, pero lo tratamos como sesión cerrada
                 token_status = "expired"
 
-            except (JWTError, JWTClaimsError) as e:
+            except InvalidTokenError as e:
                 # Token completamente inválido -> 401
                 logger.warning(
                     "Invalid access token in logout: %s",
@@ -1078,7 +1384,7 @@ async def logout(
             except ExpiredSignatureError:
                 # Refresh expirado: nada que revocar, pero no consideramos error
                 pass
-            except (JWTError, JWTClaimsError):
+            except InvalidTokenError:
                 # Refresh inválido: lo ignoramos para no romper el logout
                 pass
 

@@ -8,6 +8,7 @@ from jinja2 import Template
 from app.config import settings
 from app.logger import logger
 from typing import Optional
+from app.pii_mask import mask_email
 
 class EmailService:
     def __init__(self):
@@ -28,7 +29,7 @@ class EmailService:
         """
         # Si la configuración de SMTP está incompleta, solo loguear
         if not all([self.smtp_host, self.smtp_port, self.smtp_username, self.smtp_password]):
-            logger.info(f"Email notification (simulated): To: {to_email}, Subject: {subject}")
+            logger.info(f"Email notification (simulated): To: {mask_email(to_email)}, Subject: {subject}")
             logger.debug(f"Email content: {text_content or html_content}")
             return True
             

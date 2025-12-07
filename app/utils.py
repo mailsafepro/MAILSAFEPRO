@@ -203,10 +203,9 @@ async def read_usage_for_userid(user_id: str, redis: Redis) -> int:
 
 async def increment_usage(redis, user_id: str, amount: int = 1) -> None:
     """Incrementa el contador de uso diario."""
-    from app.utils import sanitize_redis_key, today_str_utc
-    
-    safe_user = sanitize_redis_key(user_id)  # ✅ Aplicar sanitización
-    today = today_str_utc()  # ✅ Usar la misma función
+    # Functions sanitize_redis_key and today_str_utc are defined above in this file
+    safe_user = sanitize_redis_key(user_id)  # ✅ Direct call, no import needed
+    today = today_str_utc()  # ✅ Direct call, no import needed
     key = f"usage:user:{safe_user}:{today}"  # ✅ MISMA CLAVE que read_usage_for_userid
     
     try:
@@ -548,3 +547,4 @@ async def adjust_quotas(user_id: str, redis: Redis):
         new_limit = calculate_dynamic_limit(usage, plan)
         await redis.set(f"rate_limit:{user_id}", new_limit)
         logger.info(f"Adjusted quota for {user_id} to {new_limit}")
+    

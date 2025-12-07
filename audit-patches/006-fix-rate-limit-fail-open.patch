@@ -1,0 +1,40 @@
+--- a/app/rate_limiting/distributed_limiter.py
++++ b/app/rate_limiting/distributed_limiter.py
+@@ -69,7 +69,12 @@ class DistributedRateLimiter:
+             return allowed, remaining
+             
+         except Exception as e:
+             logger.error(f"Rate limiting error for {key}: {e}")
+-            # Fail open strategy: allow request if Redis fails
+-            return True, 1
++            # ✅ SECURITY FIX: Fail-closed por defecto (seguridad sobre disponibilidad)
++            # En producción, esto debe alertar y considerar fallback local (in-memory cache)
++            # Por ahora, denegar por defecto cuando Redis no está disponible
++            logger.warning(
++                f"Rate limiting unavailable (Redis down) - denying request for {key} "
++                "(fail-closed for security)"
++            )
++            return False, 0  # ✅ Deny by default when Redis is unavailable
+ 
+     async def check_burst_limit(self, key: str, burst_limit: int) -> bool:
+--- a/app/main.py
++++ b/app/main.py
+@@ -695,7 +695,12 @@ async def global_ip_rate_limit_middleware(request: Request, call_next):
+                     headers={"Retry-After": str(GLOBAL_RATE_WINDOW)}
+                 )
+     except Exception as e:
+-        # Fail open - allow request if Redis is down
++        # ✅ SECURITY FIX: Fail-closed cuando Redis no está disponible
++        # En producción, considerar límite local en memoria como fallback
+         logger.debug(f"Global rate limit check failed (allowing request): {e}")
++        logger.warning(
++            f"Global rate limiting unavailable (Redis down) - denying request from {client_ip} "
++            "(fail-closed for security)"
++        )
++        return JSONResponse(
++            status_code=503,
++            content={"detail": "Rate limiting service unavailable. Please try again later."}
++        )
+     
+     return await call_next(request)
+

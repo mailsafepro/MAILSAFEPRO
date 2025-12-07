@@ -117,14 +117,21 @@ def setup_tracing(app=None) -> None:
         _tracer_provider.add_span_processor(span_processor)
         logger.info(f"✅ Tracing exporter configured: {_config.exporter_type}")
     else:
-        logger.warning(f"⚠️ Tracing exporter '{_config.exporter_type}' not available, using console")
-        _tracer_provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        logger.info("ℹ️ No tracing exporter configured (development mode)")
     
     # Set as global tracer provider
     trace.set_tracer_provider(_tracer_provider)
     
     # Get tracer instance
     _tracer = trace.get_tracer(__name__, _config.service_version)
+    
+    # ✅ NUEVO: Silenciar logs verbose de OpenTelemetry en development
+    if _config.environment.lower() == "development":
+        logging.getLogger("opentelemetry").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.sdk").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.instrumentation").setLevel(logging.ERROR)
+        logging.getLogger("opentelemetry.exporter").setLevel(logging.ERROR)
+        logger.info("🔇 OpenTelemetry verbose logging disabled in development")
     
     # Instrument FastAPI if app provided
     if app:
@@ -156,6 +163,11 @@ def setup_tracing(app=None) -> None:
 def _create_exporter(config: TracingConfig):
     """Create span exporter based on configuration."""
     
+    # ✅ NUEVO: En development, NO exportar traces (reduce log noise)
+    if config.environment.lower() == "development" and config.exporter_type == "console":
+        logger.info("🔇 Console tracing disabled in development (reducing log noise)")
+        return None  # No exporter = no traces en consola
+    
     if config.exporter_type == "jaeger":
         if not JAEGER_AVAILABLE:
             logger.warning("Jaeger exporter not available, install opentelemetry-exporter-jaeger")
@@ -177,6 +189,7 @@ def _create_exporter(config: TracingConfig):
         )
     
     elif config.exporter_type == "console":
+        # Solo en production/staging
         return ConsoleSpanExporter()
     
     else:

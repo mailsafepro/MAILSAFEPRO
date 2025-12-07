@@ -8,7 +8,7 @@ from typing import Dict
 
 class UserTier(str, Enum):
     FREE = "free"
-    PRO = "pro"
+    PRO = "premium"
     ENTERPRISE = "enterprise"
 
 class RateLimitConfig(BaseModel):

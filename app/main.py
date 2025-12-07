@@ -15,6 +15,15 @@ import logging
 from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 import time
+# ✅ AÑADIR: Rate limiting integrado con circuit breakers
+from app.rate_limiting.advanced_rate_limiting import (
+    RateLimitManager,
+    add_rate_limit_headers,
+    SlidingWindowRateLimiter,
+    LocalRateLimiterFallback,
+    get_circuit_breaker_status
+)
+
 
 load_dotenv()
 
@@ -41,6 +50,7 @@ from app.jobs.jobs_routes import router as jobs_router
 from app.jobs.webhooks_routes import router as jobs_webhooks_router
 from app.routes.logs_routes import router as logs_router
 from app.routes.webhooks_management import router as webhooks_mgmt_router
+from app.health_checks import router as health_router
 
 # Import middlewares and utilities
 from app.exceptions import register_exception_handlers
@@ -56,42 +66,91 @@ from tenacity import (
     before_sleep_log
 )
 
-# ✅ MEJORA 4: Prometheus metrics for monitoring
-from prometheus_client import Counter, Histogram, Gauge
+from prometheus_client import Counter, Histogram, Gauge, REGISTRY
+import os
 
-# Define custom metrics
-redis_connection_failures = Counter(
+# ===============================================
+# PROMETHEUS METRICS - FIX DUPLICADOS
+# ===============================================
+
+# ✅ Limpiar registry en desarrollo para evitar duplicados con uvicorn reloader
+if settings.environment == EnvironmentEnum.DEVELOPMENT:
+    try:
+        collectors = list(REGISTRY._collector_to_names.keys())
+        for collector in collectors:
+            try:
+                REGISTRY.unregister(collector)
+            except Exception:
+                pass
+        logger.debug("Prometheus registry cleaned for development mode")
+    except Exception as e:
+        logger.debug(f"Could not clean Prometheus registry: {e}")
+
+
+# ✅ Función helper para registrar métricas de forma segura
+def safe_counter(name: str, description: str, labelnames=None):
+    """Create Counter or return existing one"""
+    try:
+        return Counter(name, description, labelnames or [])
+    except ValueError:
+        # Métrica ya existe
+        return REGISTRY._names_to_collectors.get(name)
+
+
+def safe_histogram(name: str, description: str, buckets=None):
+    """Create Histogram or return existing one"""
+    try:
+        return Histogram(name, description, buckets=buckets)
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)
+
+
+def safe_gauge(name: str, description: str, labelnames=None):
+    """Create Gauge or return existing one"""
+    try:
+        return Gauge(name, description, labelnames or [])
+    except ValueError:
+        return REGISTRY._names_to_collectors.get(name)
+
+
+# ✅ Define custom metrics (protegidos contra duplicación)
+redis_connection_failures = safe_counter(
     'redis_connection_failures_total',
     'Total number of Redis connection failures',
-    ['error_type']
+    labelnames=['error_type']
 )
 
-redis_connection_success = Counter(
+redis_connection_success = safe_counter(
     'redis_connection_success_total',
     'Total number of successful Redis connections'
 )
 
-app_startup_duration = Histogram(
+app_startup_duration = safe_histogram(
     'app_startup_duration_seconds',
     'Application startup duration in seconds',
     buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
 )
 
-redis_pool_connections = Gauge(
+redis_pool_connections = safe_gauge(
     'redis_pool_connections_active',
     'Number of active Redis connections'
 )
 
-service_health = Gauge(
+service_health = safe_gauge(
     'service_health_status',
     'Service health status (1=healthy, 0=unhealthy)',
-    ['service']
+    labelnames=['service']
 )
+
 
 # Reduce Uvicorn noise in production
 if settings.environment == EnvironmentEnum.PRODUCTION:
     logging.getLogger("uvicorn").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").propagate = False
+
+
+# ✅ Fallback global para rate limiting
+_global_fallback = LocalRateLimiterFallback()
 
 
 # ✅ MEJORA 1: Robust Redis initialization with retry logic
@@ -135,6 +194,7 @@ async def initialize_redis_with_retry(redis_url: str) -> Redis:
         service_health.labels(service='redis').set(0)
         logger.error(f"Redis connection failed: {error_type} - {str(e)}")
         raise
+
 
 
 # ✅ MEJORA 1: Robust ARQ pool initialization with retry
@@ -341,6 +401,7 @@ async def initialize_services(app: FastAPI):
     """
     from app.cache_warming import start_cache_warming
     from app.validation import set_redis_client
+    from app.health_checks import get_health_manager
 
     logger.info("🔧 Initializing application services...")
 
@@ -348,6 +409,11 @@ async def initialize_services(app: FastAPI):
         # Inject Redis client into validation layer for distributed caching
         set_redis_client(app.state.redis)
         logger.info("✅ Redis client injected into validation layer")
+        
+        # ✅ FIX: Configurar Redis en el health manager para health checks
+        if app.state.redis:
+            get_health_manager().set_redis(app.state.redis)
+            logger.info("✅ Redis client configured in health manager")
 
         # Cache disposable domains for fast lookup
         await cache_disposable_domains(app.state.redis)
@@ -648,6 +714,7 @@ app.include_router(jobs_router, prefix="/jobs", tags=["Jobs"])
 app.include_router(jobs_webhooks_router, prefix="/webhooks", tags=["Webhooks"])
 app.include_router(logs_router, prefix="/logs", tags=["Logs"])
 app.include_router(webhooks_mgmt_router, prefix="/webhooks-management", tags=["Webhooks Management"])
+app.include_router(health_router, tags=["Health"])  # ✅ FIX: Incluir router de health_checks para /health
 
 # ✅ Register exception handlers
 register_exception_handlers(app)
@@ -658,18 +725,247 @@ mount_metrics_endpoint(app)
 # ✅ Instrument app with Prometheus
 instrument_app(app)
 
+# ✅ SECURITY: Global IP rate limiting with FAIL-CLOSED strategy
+GLOBAL_RATE_LIMIT = 1000  # requests per window
+GLOBAL_RATE_WINDOW = 60   # seconds
+
+
+# ============================================================================
+# UTILITY: IP EXTRACTION
+# ============================================================================
+
+# Lista de IPs de proxies confiables
+TRUSTED_PROXY_IPS = [
+    "10.0.0.0/8",       # Rango privado completo
+    "172.16.0.0/12",    # Docker networks (172.16-172.31)
+    "192.168.0.0/16",   # Rango privado
+    "127.0.0.1",        # Localhost
+]
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP with proxy validation."""
+    direct_ip = request.client.host if request.client else "unknown"
+    
+    # ✅ NUEVO: En desarrollo, siempre usar direct_ip
+    # En producción, confiar en headers solo si viene de proxy confiable
+    trust_proxy = os.getenv("TRUST_PROXY_HEADERS", "false").lower() == "true"
+    
+    # ✅ CAMBIO: Si NO confiamos en headers, retornar direct_ip inmediatamente
+    if not trust_proxy:
+        return direct_ip
+    
+    # ✅ CAMBIO: Si confiamos en headers Y viene de proxy confiable, extraer IP real
+    if _is_trusted_proxy(direct_ip):
+        # Extract from headers only if from trusted proxy
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip and _is_valid_ip(cf_ip):
+            return cf_ip
+        
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip and _is_valid_ip(real_ip):
+            return real_ip
+        
+        forwarded_for = request.headers.get("X-Forwarded-For")
+        if forwarded_for:
+            first_ip = forwarded_for.split(",")[0].strip()
+            if _is_valid_ip(first_ip):
+                return first_ip
+    
+    # ✅ Fallback: siempre retornar la IP directa
+    return direct_ip
+
+
+def _is_trusted_proxy(ip: str) -> bool:
+    """Check if IP is from a trusted proxy."""
+    import ipaddress
+    try:
+        client_ip = ipaddress.ip_address(ip)
+        for trusted_range in TRUSTED_PROXY_IPS:
+            if "/" in trusted_range:
+                # CIDR range
+                network = ipaddress.ip_network(trusted_range, strict=False)
+                if client_ip in network:
+                    return True
+            else:
+                # Single IP
+                if str(client_ip) == trusted_range:
+                    return True
+        return False
+    except ValueError:
+        return False
+
+
+def _is_valid_ip(ip: str) -> bool:
+    """Validate IP address format (IPv4 or IPv6)."""
+    try:
+        import ipaddress
+        ipaddress.ip_address(ip)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+# ============================================================================
+# MIDDLEWARE: GLOBAL RATE LIMIT
+# ============================================================================
+
+@app.middleware("http")
+async def global_ip_rate_limit_middleware(request: Request, call_next):
+    """
+    ✅ SECURITY: Global rate limit per IP with proxy support.
+    """
+    # Skip health checks and docs
+    if request.url.path.startswith(("/health", "/docs", "/redoc", "/openapi.json")):
+        return await call_next(request)
+    
+    # ✅ Extract real client IP considering proxies
+    client_ip = get_client_ip(request)
+    rate_key = f"global_rate:{client_ip}"
+    
+    # ✅ Log rate limit check
+    logger.info(
+        f"Rate limit check | IP: {client_ip} | Path: {request.url.path}",
+        extra={
+            "client_ip": client_ip,
+            "path": request.url.path,
+            "method": request.method,
+        }
+    )
+    
+    redis = getattr(request.app.state, "redis", None)
+    redis_available = getattr(request.app.state, "redis_available", False)
+    
+    logger.info(f"Redis available: {redis_available}")
+    
+    # Variables para headers
+    rate_limit_info = {
+        "limit": GLOBAL_RATE_LIMIT,
+        "remaining": GLOBAL_RATE_LIMIT,
+        "current": 0,
+        "reset_in": GLOBAL_RATE_WINDOW,
+    }
+    
+    # CASO 1: Redis disponible
+    if redis and redis_available:
+        limiter = SlidingWindowRateLimiter(redis)
+        
+        allowed, metadata = await limiter.check_rate_limit(
+            key=rate_key,
+            limit=GLOBAL_RATE_LIMIT,
+            window=GLOBAL_RATE_WINDOW,
+            cost=1
+        )
+        
+        # ✅ Actualizar info de rate limit
+        rate_limit_info.update({
+            "current": metadata.get("current", 0),
+            "remaining": metadata.get("remaining", GLOBAL_RATE_LIMIT),
+            "reset_in": metadata.get("reset_in", GLOBAL_RATE_WINDOW),
+        })
+        
+        logger.info(
+            f"Rate limit result | Allowed: {allowed} | Current: {metadata.get('current')} | Limit: {metadata.get('limit')}"
+        )
+        
+        if not allowed:
+            logger.warning(
+                f"Global rate limit exceeded for IP: {client_ip[:20]}",
+                extra={
+                    "current": metadata["current"],
+                    "limit": metadata["limit"],
+                    "fallback_mode": metadata.get("fallback_mode", False),
+                }
+            )
+            
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Rate limit exceeded",
+                    "detail": "Too many requests. Please slow down.",
+                    "retry_after": metadata["reset_in"],
+                    "limit": metadata["limit"],
+                    "fallback_mode": metadata.get("fallback_mode", False)
+                },
+                headers={
+                    "Retry-After": str(metadata["reset_in"]),
+                    "X-RateLimit-Limit": str(metadata["limit"]),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(int(time.time()) + metadata["reset_in"]),
+                    "X-Client-IP": client_ip,
+                }
+            )
+    
+    else:
+        # CASO 2: Redis NO disponible - fallback local
+        logger.warning("⚠️ Redis unavailable - using local fallback for global rate limit")
+        
+        allowed, metadata = _global_fallback.check_limit(
+            key=rate_key,
+            limit=GLOBAL_RATE_LIMIT,
+            window=GLOBAL_RATE_WINDOW,
+            cost=1
+        )
+        
+        # ✅ Actualizar info de rate limit
+        rate_limit_info.update({
+            "current": metadata.get("current", 0),
+            "remaining": metadata.get("remaining", GLOBAL_RATE_LIMIT),
+            "reset_in": metadata.get("reset_in", GLOBAL_RATE_WINDOW),
+        })
+        
+        if not allowed:
+            logger.warning(
+                f"Global rate limit exceeded (FALLBACK MODE) for IP: {client_ip[:20]}",
+                extra={
+                    "current": metadata["current"],
+                    "limit": metadata["limit"],
+                }
+            )
+            
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "Rate limit exceeded",
+                    "detail": "Too many requests. Service in degraded mode - reduced limits apply.",
+                    "retry_after": metadata["reset_in"],
+                    "limit": metadata["limit"],
+                    "fallback_mode": True
+                },
+                headers={
+                    "Retry-After": str(metadata["reset_in"]),
+                    "X-RateLimit-Limit": str(metadata["limit"]),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Fallback": "true",
+                    "X-Client-IP": client_ip,
+                }
+            )
+    
+    # ✅ NUEVO: Continuar con el request
+    response = await call_next(request)
+    
+    # ✅ NUEVO: Agregar headers de rate limit y client IP a TODAS las respuestas
+    response.headers["X-Client-IP"] = client_ip
+    response.headers["X-RateLimit-Limit"] = str(rate_limit_info["limit"])
+    response.headers["X-RateLimit-Remaining"] = str(rate_limit_info["remaining"])
+    response.headers["X-RateLimit-Reset"] = str(int(time.time()) + rate_limit_info["reset_in"])
+    
+    return response
+
+
 # ✅ Add CORS middleware
 app.add_middleware(
     FastAPICORSMiddleware,
     allow_origins=settings.security.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # ⚠️ SECURITY FIX: Explicit method list instead of wildcard
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "X-Request-ID", "Accept", "Origin"],
 )
 
 # ✅ Add GZip compression
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+app.middleware("http")(add_rate_limit_headers)
 
 # ✅ MEJORA 4: Endpoint to check feature flags and degraded mode status
 @app.get("/status", tags=["Health"])
@@ -703,6 +999,27 @@ async def service_status():
     }
 
     return status
+
+
+@app.get("/admin/circuit-breaker-status", tags=["Health"])
+async def circuit_breaker_status():
+    """
+    ✅ Circuit breaker status for all services.
+    Shows state of Redis, SMTP, DNS, and other circuit breakers.
+    """
+    from app.resilience.circuit_breakers import CircuitBreakerManager
+    
+    all_breakers = CircuitBreakerManager.get_all_breakers()
+    
+    stats = {}
+    for service_name in all_breakers.keys():
+        stats[service_name] = CircuitBreakerManager.get_breaker_stats(service_name)
+    
+    return {
+        "circuit_breakers": stats,
+        "rate_limiting": await get_circuit_breaker_status(),
+        "redis_available": app.state.redis_available if hasattr(app.state, 'redis_available') else False
+    }
 
 
 if __name__ == "__main__":

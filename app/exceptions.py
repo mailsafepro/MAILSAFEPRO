@@ -294,6 +294,8 @@ def _extract_plan_from_jwt(request: Request) -> str:
     return "UNKNOWN"
 
 
+from app.pii_mask import sanitize_request_body
+
 async def validation_exception_handler(
     request: Request,
     exc: RequestValidationError
@@ -345,10 +347,13 @@ async def validation_exception_handler(
         errors=formatted_errors
     )
     
-    error_details = json.dumps(formatted_errors, default=str, ensure_ascii=False)[:1000]
+    # ✅ NUEVO: Sanitizar errores antes de loguear
+    error_details_raw = json.dumps(formatted_errors, default=str, ensure_ascii=False)[:1000]
+    error_details_safe = sanitize_request_body(error_details_raw)  # ← SANITIZAR
+    
     logger.warning(
         f"Validation Error | Count: {len(formatted_errors)} | "
-        f"Details: {error_details} | "
+        f"Details: {error_details_safe} | "  # ← USAR VERSION SANITIZADA
         f"Trace: {trace_id} | "
         f"Plan: {client_plan} | "
         f"Path: {request.url.path}"

@@ -148,11 +148,8 @@ class TestBillingWebhook:
     @pytest.mark.asyncio
     async def test_webhook_missing_signature(self, client):
         """Test webhook without signature header"""
-        # Ensure we're NOT in dev mode (unset DOCKER_ENV if it was set by another test)
-        with patch.dict(os.environ, {}, clear=False):
-            if "DOCKER_ENV" in os.environ:
-                del os.environ["DOCKER_ENV"]
-            
+        # Ensure we're NOT in dev/test mode - clear both DOCKER_ENV and TESTING
+        with patch.dict(os.environ, {"TESTING": "", "DOCKER_ENV": ""}, clear=False):
             response = await client.post("/billing/webhook", json={"type": "test"})
             assert response.status_code == 400
             assert "Missing Stripe signature" in response.json()["detail"]
@@ -160,11 +157,8 @@ class TestBillingWebhook:
     @pytest.mark.asyncio
     async def test_webhook_invalid_signature(self, client):
         """Test webhook with invalid signature"""
-        # Ensure we're NOT in dev mode
-        with patch.dict(os.environ, {}, clear=False):
-            if "DOCKER_ENV" in os.environ:
-                del os.environ["DOCKER_ENV"]
-            
+        # Ensure we're NOT in dev/test mode
+        with patch.dict(os.environ, {"TESTING": "", "DOCKER_ENV": ""}, clear=False):
             # Use real stripe exception class
             with patch('app.routes.billing_routes.stripe.Webhook.construct_event', 
                    side_effect=stripe.error.SignatureVerificationError("Invalid signature", "sig")):
@@ -552,11 +546,8 @@ class TestErrorHandlingCoverage:
     @pytest.mark.asyncio
     async def test_webhook_signature_error(self, client):
         """Test webhook with invalid signature"""
-        # Ensure we're NOT in dev mode
-        with patch.dict(os.environ, {}, clear=False):
-            if "DOCKER_ENV" in os.environ:
-                del os.environ["DOCKER_ENV"]
-            
+        # Ensure we're NOT in dev/test mode
+        with patch.dict(os.environ, {"TESTING": "", "DOCKER_ENV": ""}, clear=False):
             # Use the real stripe exception, just patch the construct_event method
             with patch('app.routes.billing_routes.stripe.Webhook.construct_event', 
                        side_effect=stripe.error.SignatureVerificationError("Bad sig", "sig")):
@@ -571,11 +562,8 @@ class TestErrorHandlingCoverage:
     @pytest.mark.asyncio
     async def test_webhook_value_error(self, client):
         """Test webhook with invalid payload"""
-        # Ensure we're NOT in dev mode
-        with patch.dict(os.environ, {}, clear=False):
-            if "DOCKER_ENV" in os.environ:
-                del os.environ["DOCKER_ENV"]
-            
+        # Ensure we're NOT in dev/test mode
+        with patch.dict(os.environ, {"TESTING": "", "DOCKER_ENV": ""}, clear=False):
             # Don't mock stripe module, just patch construct_event
             with patch('app.routes.billing_routes.stripe.Webhook.construct_event', 
                        side_effect=ValueError("Invalid payload")):
@@ -590,11 +578,8 @@ class TestErrorHandlingCoverage:
     @pytest.mark.asyncio
     async def test_webhook_generic_exception(self, client):
         """Test webhook with unexpected error"""
-        # Ensure we're NOT in dev mode
-        with patch.dict(os.environ, {}, clear=False):
-            if "DOCKER_ENV" in os.environ:
-                del os.environ["DOCKER_ENV"]
-            
+        # Ensure we're NOT in dev/test mode
+        with patch.dict(os.environ, {"TESTING": "", "DOCKER_ENV": ""}, clear=False):
             # Don't mock stripe module, just patch construct_event
             with patch('app.routes.billing_routes.stripe.Webhook.construct_event', 
                        side_effect=TypeError("Boom")):

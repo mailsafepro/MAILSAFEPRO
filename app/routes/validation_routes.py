@@ -57,6 +57,7 @@ from app.providers import (
     RiskAssessment,  # ← NUEVO
     normalize_email_full,  # ← NUEVO: Full email normalization
 )
+from app.pii_mask import mask_email
 from app.utils import increment_usage, _get_plan_config_safe
 from app.validation import (
     SMTP_RESTRICTED_DOMAINS,
@@ -585,8 +586,7 @@ class EmailValidationEngine:
             # ============================================================
             # 1. Validate format
             formatted_email = await self._validate_email_format(email)
-            logger.info(f"{validation_id} | Format validation passed | Email: {formatted_email}")
-            
+            logger.info(f"{validation_id} | Format validation passed | Email: {mask_email(formatted_email)}")            
             # 2. Apply full normalization (alias removal, Gmail dots, etc.)
             normalized_email = normalize_email_full(formatted_email)
             

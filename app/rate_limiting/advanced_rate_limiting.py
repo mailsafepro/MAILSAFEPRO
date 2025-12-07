@@ -1,27 +1,28 @@
 """
-Advanced Rate Limiting Module
+Advanced Rate Limiting Module - INTEGRATED VERSION
 
-Enterprise-grade rate limiting with:
-- Sliding window algorithm (more accurate than fixed window)
-- Per-endpoint limits
-- Per-user and per-IP limits
-- Distributed rate limiting with Redis
-- Graceful degradation
-- Rate limit headers (RFC 6585)
+Integrates with existing resilience infrastructure:
+- Uses CircuitBreakerManager for Redis failures
+- Uses RedisFallback for cache operations
+- Fail-closed strategy with local fallback
 """
 
 from __future__ import annotations
 
 import time
 import hashlib
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 from dataclasses import dataclass
 from enum import Enum
+from collections import defaultdict
+import threading
 
 from fastapi import Request, HTTPException, status
 from redis.asyncio import Redis
 
 from app.structured_logging import get_logger
+from app.resilience.circuit_breakers import CircuitBreakerManager
+from app.resilience.fallbacks import RedisFallback
 
 logger = get_logger(__name__)
 
@@ -34,59 +35,49 @@ class RateLimitTier(str, Enum):
     FREE = "free"
     PREMIUM = "premium"
     ENTERPRISE = "enterprise"
-    ANONYMOUS = "anonymous"  # No auth
+    ANONYMOUS = "anonymous"
 
 
 @dataclass
 class RateLimitRule:
     """Rate limiting rule definition."""
-    requests: int  # Max requests
-    window: int  # Window in seconds
-    cost: int = 1  # Cost per request (for weighted limits)
+    requests: int
+    window: int
+    cost: int = 1
 
 
-# Per-endpoint rate limits (requests per window)
 ENDPOINT_LIMITS: Dict[str, Dict[RateLimitTier, RateLimitRule]] = {
-    # Authentication endpoints (prevent brute force)
     "/auth/login": {
-        RateLimitTier.ANONYMOUS: RateLimitRule(requests=5, window=300),  # 5 per 5min
+        RateLimitTier.ANONYMOUS: RateLimitRule(requests=5, window=300),
         RateLimitTier.FREE: RateLimitRule(requests=10, window=300),
         RateLimitTier.PREMIUM: RateLimitRule(requests=20, window=300),
         RateLimitTier.ENTERPRISE: RateLimitRule(requests=50, window=300),
     },
     "/auth/register": {
-        RateLimitTier.ANONYMOUS: RateLimitRule(requests=3, window=3600),  # 3 per hour
+        RateLimitTier.ANONYMOUS: RateLimitRule(requests=3, window=3600),
         RateLimitTier.FREE: RateLimitRule(requests=5, window=3600),
         RateLimitTier.PREMIUM: RateLimitRule(requests=10, window=3600),
         RateLimitTier.ENTERPRISE: RateLimitRule(requests=20, window=3600),
     },
-    
-    # Email validation (main product)
-    "/v1/validate-email": {
-        RateLimitTier.FREE: RateLimitRule(requests=100, window=60),  # 100/min
-        RateLimitTier.PREMIUM: RateLimitRule(requests=1000, window=60),  # 1000/min
-        RateLimitTier.ENTERPRISE: RateLimitRule(requests=10000, window=60),  # 10k/min
+    "/validate/email": {
+        RateLimitTier.FREE: RateLimitRule(requests=100, window=60),
+        RateLimitTier.PREMIUM: RateLimitRule(requests=1000, window=60),
+        RateLimitTier.ENTERPRISE: RateLimitRule(requests=10000, window=60),
     },
-    "/v1/validate-advanced": {
-        RateLimitTier.FREE: RateLimitRule(requests=50, window=60, cost=2),  # More expensive
+    "/validate/batch": {
+        RateLimitTier.FREE: RateLimitRule(requests=50, window=60, cost=2),
         RateLimitTier.PREMIUM: RateLimitRule(requests=500, window=60, cost=2),
         RateLimitTier.ENTERPRISE: RateLimitRule(requests=5000, window=60, cost=2),
     },
-    
-    # Batch operations (heavyweight)
     "/v1/jobs": {
         RateLimitTier.PREMIUM: RateLimitRule(requests=10, window=60),
         RateLimitTier.ENTERPRISE: RateLimitRule(requests=100, window=60),
     },
-    
-    # API key management (security-sensitive)
     "/api-keys": {
-        RateLimitTier.FREE: RateLimitRule(requests=10, window=3600),  # 10/hour
+        RateLimitTier.FREE: RateLimitRule(requests=10, window=3600),
         RateLimitTier.PREMIUM: RateLimitRule(requests=50, window=3600),
         RateLimitTier.ENTERPRISE: RateLimitRule(requests=200, window=3600),
     },
-    
-    # Default limits for unspecified endpoints
     "default": {
         RateLimitTier.ANONYMOUS: RateLimitRule(requests=30, window=60),
         RateLimitTier.FREE: RateLimitRule(requests=100, window=60),
@@ -97,18 +88,107 @@ ENDPOINT_LIMITS: Dict[str, Dict[RateLimitTier, RateLimitRule]] = {
 
 
 # =============================================================================
-# SLIDING WINDOW RATE LIMITER
+# LOCAL FALLBACK RATE LIMITER
+# =============================================================================
+
+class LocalRateLimiterFallback:
+    """
+    In-memory rate limiter for when Redis is unavailable.
+    Uses conservative limits (10% of normal) for security.
+    """
+    
+    def __init__(self):
+        self._counters: Dict[str, List[float]] = defaultdict(list)
+        self._lock = threading.Lock()
+        self._last_cleanup = time.time()
+        self._cleanup_interval = 60
+    
+    def _cleanup_old_entries(self) -> None:
+        """Remove expired entries to prevent memory bloat."""
+        now = time.time()
+        
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        
+        cutoff = now - 3600
+        
+        for key in list(self._counters.keys()):
+            self._counters[key] = [
+                ts for ts in self._counters[key] if ts > cutoff
+            ]
+            if not self._counters[key]:
+                del self._counters[key]
+        
+        self._last_cleanup = now
+    
+    def check_limit(
+        self, 
+        key: str, 
+        limit: int, 
+        window: int,
+        cost: int = 1
+    ) -> Tuple[bool, Dict[str, int]]:
+        """
+        Check rate limit using local memory.
+        CONSERVATIVE: Uses 10% of normal limit.
+        """
+        now = time.time()
+        window_start = now - window
+        
+        with self._lock:
+            self._cleanup_old_entries()
+            
+            self._counters[key] = [
+                ts for ts in self._counters[key] if ts > window_start
+            ]
+            
+            current = len(self._counters[key])
+            
+            # CRITICAL: Use 10% of normal limit as fallback
+            fallback_limit = max(1, limit // 10)
+            
+            if current + cost > fallback_limit:
+                return False, {
+                    "current": current,
+                    "limit": fallback_limit,
+                    "remaining": 0,
+                    "reset_in": window,
+                    "fallback_mode": True,
+                }
+            
+            for _ in range(cost):
+                self._counters[key].append(now)
+            
+            remaining = fallback_limit - (current + cost)
+            
+            return True, {
+                "current": current + cost,
+                "limit": fallback_limit,
+                "remaining": max(0, remaining),
+                "reset_in": window,
+                "fallback_mode": True,
+            }
+
+
+# =============================================================================
+# SLIDING WINDOW RATE LIMITER (INTEGRATED)
 # =============================================================================
 
 class SlidingWindowRateLimiter:
     """
-    Sliding window rate limiter using Redis sorted sets.
+    Sliding window rate limiter using Redis.
     
-    More accurate than fixed windows as it counts requests in a rolling time window.
+    INTEGRATIONS:
+    - Uses CircuitBreakerManager for Redis failures
+    - Uses LocalRateLimiterFallback when Redis unavailable
+    - Fail-closed strategy for security
     """
     
     def __init__(self, redis: Redis):
         self.redis = redis
+        self.fallback = LocalRateLimiterFallback()
+        # ✅ REUSE existing circuit breaker infrastructure
+        self.redis_breaker = CircuitBreakerManager.get_breaker("redis")
     
     async def check_rate_limit(
         self,
@@ -118,22 +198,11 @@ class SlidingWindowRateLimiter:
         cost: int = 1
     ) -> Tuple[bool, Dict[str, int]]:
         """
-        Check if request should be rate limited using sliding window.
-        
-        Args:
-            key: Unique identifier (user_id:endpoint or ip:endpoint)
-            limit: Maximum requests allowed in window
-            window: Time window in seconds
-            cost: Cost of this request (for weighted limits)
-            
-        Returns:
-            Tuple of (allowed: bool, metadata: dict)
-            metadata contains: current, limit, remaining, reset_in
+        Check rate limit with circuit breaker protection.
+        Falls back to local limiter if Redis fails.
         """
-        now = time.time()
-        window_start = now - window
         
-        # Lua script for atomic sliding window check
+        # Lua script for atomic sliding window
         lua_script = """
         local key = KEYS[1]
         local now = tonumber(ARGV[1])
@@ -142,45 +211,41 @@ class SlidingWindowRateLimiter:
         local cost = tonumber(ARGV[4])
         local window_start = now - window
         
-        -- Remove old entries outside window
         redis.call('ZREMRANGEBYSCORE', key, '-inf', window_start)
-        
-        -- Count current requests in window
         local current = redis.call('ZCARD', key)
         
-        -- Check if adding cost would exceed limit
         if current + cost > limit then
-            -- Get oldest timestamp for reset calculation
             local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
             local reset_in = window
             if #oldest > 0 then
                 reset_in = math.ceil(tonumber(oldest[2]) + window - now)
             end
-            return {0, current, limit, 0, reset_in}  -- Not allowed
+            return {0, current, limit, 0, reset_in}
         end
         
-        -- Add current request (use microsecond precision for uniqueness)
         for i = 1, cost do
             redis.call('ZADD', key, now + (i * 0.000001), now .. ':' .. i)
         end
         
-        -- Set expiration
         redis.call('EXPIRE', key, window + 10)
         
         local remaining = limit - (current + cost)
-        return {1, current + cost, limit, remaining, window}  -- Allowed
+        return {1, current + cost, limit, remaining, window}
         """
         
+        # ✅ TRY Redis with circuit breaker protection
         try:
-            result = await self.redis.eval(
-                lua_script,
-                1,
-                key,
-                str(now),
-                str(window),
-                str(limit),
-                str(cost)
-            )
+            now = time.time()
+            
+            # Wrap in circuit breaker
+            @self.redis_breaker
+            async def check_redis():
+                return await self.redis.eval(
+                    lua_script, 1, key,
+                    str(now), str(window), str(limit), str(cost)
+                )
+            
+            result = await check_redis()
             
             allowed = bool(result[0])
             current = int(result[1])
@@ -188,37 +253,22 @@ class SlidingWindowRateLimiter:
             remaining = int(result[3])
             reset_in = int(result[4])
             
-            metadata = {
+            return allowed, {
                 "current": current,
                 "limit": limit_val,
                 "remaining": max(0, remaining),
                 "reset_in": reset_in,
+                "fallback_mode": False,
             }
-            
-            return allowed, metadata
-            
+        
         except Exception as e:
-            logger.error("Rate limit check failed", error=str(e), key=key)
-            # On Redis failure, allow request (fail open)
-            return True, {
-                "current": 0,
-                "limit": limit,
-                "remaining": limit,
-                "reset_in": window,
-            }
-    
-    async def get_current_usage(self, key: str, window: int) -> int:
-        """Get current request count in window."""
-        try:
-            now = time.time()
-            window_start = now - window
-            
-            # Remove expired and count
-            await self.redis.zremrangebyscore(key, '-inf', window_start)
-            count = await self.redis.zcard(key)
-            return count
-        except Exception:
-            return 0
+            # ✅ FAIL-CLOSED: Use conservative local limits
+            logger.error(
+                "Rate limit check failed - using LOCAL FALLBACK",
+                error=str(e)[:200],
+                key=key[:30]
+            )
+            return self.fallback.check_limit(key, limit, window, cost)
 
 
 # =============================================================================
@@ -234,7 +284,6 @@ class RateLimitManager:
     
     def _get_tier(self, request: Request) -> RateLimitTier:
         """Determine user's rate limit tier from request."""
-        # Check if user is authenticated
         user = getattr(request.state, "user", None)
         
         if user:
@@ -254,23 +303,21 @@ class RateLimitManager:
         tier: RateLimitTier
     ) -> Optional[RateLimitRule]:
         """Get rate limit rule for endpoint and tier."""
-        # Try exact endpoint match
         if endpoint in ENDPOINT_LIMITS:
-            return ENDPOINT_LIMITS[endpoint].get(tier)
+            rule = ENDPOINT_LIMITS[endpoint].get(tier)
+            if rule:
+                return rule
         
-        # Try default limits
         return ENDPOINT_LIMITS["default"].get(tier)
     
     def _get_rate_limit_key(self, request: Request, endpoint: str) -> str:
         """Generate unique rate limit key."""
-        # Prefer user-based limiting over IP
         user = getattr(request.state, "user", None)
         
         if user:
             user_id = getattr(user, "id", "unknown")
             return f"ratelimit:user:{user_id}:{endpoint}"
         
-        # Fall back to IP-based limiting
         client_ip = request.client.host if request.client else "unknown"
         ip_hash = hashlib.sha256(client_ip.encode()).hexdigest()[:16]
         return f"ratelimit:ip:{ip_hash}:{endpoint}"
@@ -278,15 +325,12 @@ class RateLimitManager:
     async def check_rate_limit(self, request: Request) -> None:
         """
         Check rate limit for current request.
-        
-        Raises HTTPException if rate limit exceeded.
-        Adds rate limit headers to request state for middleware.
+        Raises HTTPException if exceeded.
         """
         endpoint = request.url.path
         tier = self._get_tier(request)
         rule = self._get_limit_rule(endpoint, tier)
         
-        # No limit configured for this endpoint/tier
         if not rule:
             logger.debug("No rate limit configured", endpoint=endpoint, tier=tier.value)
             return
@@ -300,7 +344,6 @@ class RateLimitManager:
             cost=rule.cost
         )
         
-        # Store metadata in request state for response headers
         request.state.rate_limit = metadata
         
         if not allowed:
@@ -309,8 +352,19 @@ class RateLimitManager:
                 endpoint=endpoint,
                 tier=tier.value,
                 current=metadata["current"],
-                limit=metadata["limit"]
+                limit=metadata["limit"],
+                fallback_mode=metadata.get("fallback_mode", False)
             )
+            
+            headers = {
+                "Retry-After": str(metadata["reset_in"]),
+                "X-RateLimit-Limit": str(metadata["limit"]),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(int(time.time()) + metadata["reset_in"]),
+            }
+            
+            if metadata.get("fallback_mode"):
+                headers["X-RateLimit-Fallback"] = "true"
             
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -321,81 +375,40 @@ class RateLimitManager:
                     "remaining": metadata["remaining"],
                     "reset_in": metadata["reset_in"],
                     "tier": tier.value,
+                    "fallback_mode": metadata.get("fallback_mode", False),
                 },
-                headers={
-                    "Retry-After": str(metadata["reset_in"]),
-                    "X-RateLimit-Limit": str(metadata["limit"]),
-                    "X-RateLimit-Remaining": "0",
-                    "X-RateLimit-Reset": str(int(time.time()) + metadata["reset_in"]),
-                }
+                headers=headers
             )
-        
-        logger.debug(
-            "Rate limit check passed",
-            endpoint=endpoint,
-            tier=tier.value,
-            current=metadata["current"],
-            remaining=metadata["remaining"]
-        )
 
 
 # =============================================================================
-# RATE LIMIT HEADERS MIDDLEWARE
+# MIDDLEWARE
 # =============================================================================
 
 async def add_rate_limit_headers(request: Request, call_next):
-    """Add rate limit headers to response (RFC 6585 compliant)."""
+    """Add rate limit headers to response (RFC 6585)."""
     response = await call_next(request)
     
-    # Check if rate limit metadata is available
     rate_limit = getattr(request.state, "rate_limit", None)
     
     if rate_limit:
         response.headers["X-RateLimit-Limit"] = str(rate_limit["limit"])
         response.headers["X-RateLimit-Remaining"] = str(rate_limit["remaining"])
-        response.headers["X-RateLimit-Reset"] = str(int(time.time()) + rate_limit["reset_in"])
+        response.headers["X-RateLimit-Reset"] = str(
+            int(time.time()) + rate_limit["reset_in"]
+        )
+        
+        if rate_limit.get("fallback_mode"):
+            response.headers["X-RateLimit-Fallback"] = "true"
     
     return response
 
 
 # =============================================================================
-# ADMIN ENDPOINTS FOR MONITORING
+# MONITORING
 # =============================================================================
 
-async def get_rate_limit_stats(redis: Redis, user_id: Optional[str] = None) -> Dict:
-    """Get rate limiting statistics."""
-    try:
-        if user_id:
-            pattern = f"ratelimit:user:{user_id}:*"
-        else:
-            pattern = "ratelimit:*"
-        
-        keys = []
-        cursor = 0
-        while True:
-            cursor, batch = await redis.scan(cursor=cursor, match=pattern, count=100)
-            keys.extend(batch)
-            if cursor == 0:
-                break
-        
-        stats = {
-            "total_keys": len(keys),
-            "endpoints": {},
-        }
-        
-        # Sample some keys for endpoint stats
-        for key in keys[:50]:  # Limit to avoid overload
-            parts = key.decode() if isinstance(key, bytes) else key
-            if ":" in parts:
-                endpoint = parts.split(":")[-1]
-                count = await redis.zcard(key)
-                if endpoint not in stats["endpoints"]:
-                    stats["endpoints"][endpoint] = {"keys": 0, "total_requests": 0}
-                stats["endpoints"][endpoint]["keys"] += 1
-                stats["endpoints"][endpoint]["total_requests"] += count
-        
-        return stats
-        
-    except Exception as e:
-        logger.error("Failed to get rate limit stats", error=str(e))
-        return {"error": str(e)}
+async def get_circuit_breaker_status() -> Dict:
+    """Get Redis circuit breaker status."""
+    stats = CircuitBreakerManager.get_breaker_stats("redis")
+    return stats if stats else {"state": "unknown"}

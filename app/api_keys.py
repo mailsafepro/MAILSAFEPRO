@@ -804,25 +804,24 @@ async def rotate_api_key(
     to allow for smooth transition in client applications.
     """
     _ensure_key_hash_format(key_hash)
-
     user_id = current_client.sub
     await enforce_rate_limit(redis, bucket=f"ak:rotate:{user_id}", limit=10, window=60)
     client_set_hash = APIKeySecurity.hash_id(user_id)
-
+    
     is_member = await redis.sismember(f"api_keys:{client_set_hash}", key_hash)
     if not is_member:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="API key not found",
         )
-
+    
     old_key_data = await redis.get(f"key:{key_hash}")
     if not old_key_data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="API key data not found",
         )
-
+    
     old_key_data_str = _decode(old_key_data) or ""
     old_key_info = _safe_json_loads(old_key_data_str)
     if not old_key_info:
@@ -830,7 +829,26 @@ async def rotate_api_key(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Corrupted key data",
         )
-
+    
+    # ✅ NUEVO: Validación explícita de estado (defensa en profundidad)
+    key_status = (old_key_info.get("status") or "").lower()
+    is_revoked = APIKeyManagement.determine_revocation_status(old_key_info)
+    
+    if is_revoked or key_status in ("revoked", "deprecated"):
+        logger.warning(
+            "Attempt to rotate revoked/deprecated key",
+            extra={
+                "user_id": user_id[:8],
+                "key_hash": key_hash[:8],
+                "status": key_status,
+            }
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot rotate revoked or deprecated API key",
+        )
+    
+    # ✅ Continuar con la rotación solo si la key está activa
     new_plain_key = secrets.token_urlsafe(32)
     new_key_hash = create_hashed_key(new_plain_key)
     timestamp = _utcnow_iso()

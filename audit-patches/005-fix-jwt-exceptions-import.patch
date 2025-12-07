@@ -1,0 +1,41 @@
+--- a/app/auth.py
++++ b/app/auth.py
+@@ -11,7 +11,9 @@ from passlib.context import CryptContext
+ import jwt
+-from jwt.exceptions import InvalidTokenError, ExpiredSignatureError, InvalidIssuerError
++from jwt.exceptions import (
++    InvalidTokenError, ExpiredSignatureError, InvalidIssuerError,
++    JWTError, JWTClaimsError  # ✅ SECURITY FIX: Importar excepciones faltantes
++)
+ 
+ 
+ from fastapi import (
+@@ -907,7 +909,7 @@ async def refresh_token(
+         except ExpiredSignatureError:
+             logger.warning("Refresh token expired")
+             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token expired")
+-        except (JWTError, JWTClaimsError) as e:
++        except (JWTError, JWTClaimsError) as e:  # ✅ Ahora JWTError está importado
+             logger.warning("Invalid refresh token: %s", str(e)[:200])
+             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+         
+@@ -1022,7 +1024,7 @@ async def logout(
+                 # Token expirado: ya no es usable, pero lo tratamos como sesión cerrada
+                 token_status = "expired"
+ 
+-            except (JWTError, JWTClaimsError) as e:
++            except (JWTError, JWTClaimsError) as e:  # ✅ Ahora JWTError está importado
+                 # Token completamente inválido -> 401
+                 logger.warning(
+                     "Invalid access token in logout: %s",
+@@ -1063,7 +1065,7 @@ async def logout(
+                 if jti_refresh:
+                     await revoke_refresh_token(jti_refresh, redis)
+             except ExpiredSignatureError:
+                 # Refresh expirado: nada que revocar, pero no consideramos error
+                 pass
+-            except (JWTError, JWTClaimsError):
++            except (JWTError, JWTClaimsError):  # ✅ Ahora JWTError está importado
+                 # Refresh inválido: lo ignoramos para no romper el logout
+                 pass
+

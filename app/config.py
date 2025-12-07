@@ -123,11 +123,6 @@ class SecuritySettings(BaseSettings):
     )
 
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
-from typing import List, Set, Any
-import json
-from app.validations.temp_mail_domains import DISPOSABLE_DOMAINS as STATIC_DISPOSABLE_DOMAINS
 
 class EmailValidationSettings(BaseSettings):
     """Email validation service configuration"""
@@ -595,42 +590,87 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def enforce_production_security(self) -> "Settings":
         """Enforce critical security requirements in production"""
+        
         # Saltar validaciones si estamos en testing
         if self.testing_mode or os.getenv("TESTING") == "1":
             return self
-            
+        
         if self.environment == EnvironmentEnum.PRODUCTION:
+            # ✅ NUEVO: Lista de defaults débiles prohibidos
+            WEAK_DEFAULTS = {
+                "a" * 32,                    # api_key_secret default
+                "test_vt_key",               # vt_api_key default
+                "test_clearbit_key",         # clearbit_api_key default
+                "test_metrics_key",          # metrics_api_key default
+                "sk_test_dummy",             # stripe secret_key default
+                "pk_test_dummy",             # stripe public_key default
+                "whsec_dummy",               # stripe webhook_secret default
+                "test_webhook_secret",       # security webhook_secret default
+                "test_docs_password",        # docs password default
+            }
+            
             # HTTPS/HSTS
             if not self.security.https_redirect:
                 raise ValueError("https_redirect must be enabled in PRODUCTION")
             if self.security.hsts_max_age <= 0:
                 raise ValueError("hsts_max_age must be > 0 in PRODUCTION")
-
-            # JWT secret must exist and be strong (validator already checks length if provided)
+            
+            # ✅ JWT secret - validar que no sea default débil
             jwt_secret = self.jwt.secret.get_secret_value()
             if not jwt_secret or len(jwt_secret) < 32:
                 raise ValueError("JWT secret must be set and >= 32 chars in PRODUCTION")
-
-            # Stripe secrets must be provided and well-formed
-            if not self.stripe.secret_key.get_secret_value():
-                raise ValueError("Stripe secret_key is required in PRODUCTION")
-            if not self.stripe.public_key.get_secret_value():
-                raise ValueError("Stripe public_key is required in PRODUCTION")
-            if not self.stripe.webhook_secret.get_secret_value():
-                raise ValueError("Stripe webhook_secret is required in PRODUCTION")
-
-            # API key secret must be present
-            if not self.api_key_secret.get_secret_value():
-                raise ValueError("API_KEY_SECRET is required in PRODUCTION")
-
+            if jwt_secret in WEAK_DEFAULTS:
+                raise ValueError("JWT secret cannot use default value in PRODUCTION")
+            
+            # ✅ Stripe secrets - validar formato y que no sean defaults
+            stripe_secret = self.stripe.secret_key.get_secret_value()
+            if not stripe_secret or stripe_secret in WEAK_DEFAULTS:
+                raise ValueError("Stripe secret_key is required and cannot use default in PRODUCTION")
+            if not stripe_secret.startswith(("sk_live_", "sk_test_")):
+                raise ValueError("Stripe secret_key must be a valid Stripe key in PRODUCTION")
+            
+            stripe_public = self.stripe.public_key.get_secret_value()
+            if not stripe_public or stripe_public in WEAK_DEFAULTS:
+                raise ValueError("Stripe public_key is required and cannot use default in PRODUCTION")
+            
+            stripe_webhook = self.stripe.webhook_secret.get_secret_value()
+            if not stripe_webhook or stripe_webhook in WEAK_DEFAULTS:
+                raise ValueError("Stripe webhook_secret is required and cannot use default in PRODUCTION")
+            
+            # ✅ API key secret - validar que no sea el default débil
+            api_key_secret = self.api_key_secret.get_secret_value()
+            if not api_key_secret or api_key_secret in WEAK_DEFAULTS:
+                raise ValueError(
+                    "API_KEY_SECRET is required and cannot use default value in PRODUCTION. "
+                    "Generate a strong secret with: python -c 'import secrets; print(secrets.token_hex(32))'"
+                )
+            if len(api_key_secret) < 32:
+                raise ValueError("API_KEY_SECRET must be at least 32 characters in PRODUCTION")
+            
+            # ✅ VirusTotal API key - debe ser real, no default
+            vt_key = self.vt_api_key.get_secret_value()
+            if vt_key in WEAK_DEFAULTS:
+                raise ValueError("VT_API_KEY cannot use default test value in PRODUCTION")
+            
+            # ✅ Clearbit API key - debe ser real, no default
+            clearbit_key = self.clearbit_api_key.get_secret_value()
+            if clearbit_key in WEAK_DEFAULTS:
+                raise ValueError("CLEARBIT_API_KEY cannot use default test value in PRODUCTION")
+            
+            # ✅ Metrics API key - debe ser real, no default
+            metrics_key = self.metrics_api_key.get_secret_value()
+            if metrics_key in WEAK_DEFAULTS:
+                raise ValueError("API_KEY_METRICS cannot use default test value in PRODUCTION")
+            
             # SMTP credentials if not localhost
             if self.smtp_host not in {"localhost", "127.0.0.1"}:
                 if not self.smtp_username or not self.smtp_password.get_secret_value():
-                    raise ValueError("SMTP credentials are required in PRODUCTION when smtp_host is not localhost")
-                
-            pass
-
+                    raise ValueError(
+                        "SMTP credentials are required in PRODUCTION when smtp_host is not localhost"
+                    )
+        
         return self
+
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,14 +1,21 @@
 """
+
 Pure ASGI Middleware - Production Grade
 
 High-performance middleware using pure ASGI pattern (not BaseHTTPMiddleware).
+
 This avoids the starlette middleware stack overflow issues.
 
 Benefits:
+
 - 2-3x faster than BaseHTTPMiddleware
+
 - No stack overflow issues
+
 - Lower memory footprint
+
 - Better async performance
+
 """
 
 import time
@@ -31,16 +38,16 @@ class SecurityHeadersASGI:
     - Strict-Transport-Security (HSTS)
     - Content-Security-Policy
     """
-    
+
     def __init__(self, app: ASGIApp, environment: str = "production"):
         self.app = app
         self.environment = environment
-    
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
@@ -78,7 +85,7 @@ class SecurityHeadersASGI:
                 )
             
             await send(message)
-        
+
         await self.app(scope, receive, send_with_headers)
 
 
@@ -92,33 +99,31 @@ class LoggingASGI:
     - Request duration
     - Client IP
     """
-    
+
     def __init__(self, app: ASGIApp):
         self.app = app
-    
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        
+
         start_time = time.time()
         status_code = 500
-        
+
         async def send_with_logging(message):
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
             await send(message)
-        
+
         try:
             await self.app(scope, receive, send_with_logging)
         finally:
             # Log after request completes
             duration = time.time() - start_time
-            
             client = scope.get("client")
             client_ip = client[0] if client else "unknown"
-            
             method = scope.get("method", "UNKNOWN")
             path = scope.get("path", "/")
             
@@ -143,18 +148,17 @@ class RateLimitASGI:
     Uses Redis for distributed rate limiting.
     Falls back gracefully if Redis is unavailable.
     """
-    
+
     def __init__(self, app: ASGIApp):
         self.app = app
-    
+
     async def __call__(self, scope: Scope, receive: Scope, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        
+
         # Rate limiting logic will be in the endpoint dependency
         # This middleware just adds headers
-        
         async def send_with_rate_limit_headers(message):
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
@@ -167,7 +171,7 @@ class RateLimitASGI:
                     headers["X-RateLimit-Reset"] = str(rate_info.get("reset", 0))
             
             await send(message)
-        
+
         await self.app(scope, receive, send_with_rate_limit_headers)
 
 
@@ -180,7 +184,7 @@ class MetricsASGI:
     - Request duration histogram
     - Active requests gauge
     """
-    
+
     def __init__(self, app: ASGIApp):
         self.app = app
         self.active_requests = 0
@@ -210,12 +214,12 @@ class MetricsASGI:
             self.metrics_enabled = True
         except ImportError:
             self.metrics_enabled = False
-    
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or not self.metrics_enabled:
             await self.app(scope, receive, send)
             return
-        
+
         method = scope.get("method", "UNKNOWN")
         path = scope.get("path", "/")
         start_time = time.time()
@@ -223,13 +227,13 @@ class MetricsASGI:
         
         # Increment active requests
         self.active_requests_gauge.inc()
-        
+
         async def send_with_metrics(message):
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
             await send(message)
-        
+
         try:
             await self.app(scope, receive, send_with_metrics)
         finally:
@@ -254,10 +258,11 @@ class MetricsASGI:
                     method=method,
                     endpoint=normalized_path
                 ).observe(duration)
-    
+
     def _normalize_path(self, path: str) -> str:
         """Normalize path by removing UUIDs and numeric IDs."""
         import re
+        
         # Replace UUIDs
         path = re.sub(
             r'/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
@@ -265,8 +270,10 @@ class MetricsASGI:
             path,
             flags=re.IGNORECASE
         )
+        
         # Replace numeric IDs
         path = re.sub(r'/\d+', '/{id}', path)
+        
         return path
 
 
@@ -276,15 +283,15 @@ class HistoricalKeyCompatASGI:
     
     Converts old Authorization: Bearer sk_... to X-API-Key: sk_...
     """
-    
+
     def __init__(self, app: ASGIApp):
         self.app = app
-    
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        
+
         # Check if Authorization header contains API key
         headers = Headers(scope=scope)
         auth_header = headers.get("authorization", "")
@@ -302,8 +309,9 @@ class HistoricalKeyCompatASGI:
             # Add X-API-Key header
             new_headers.append((b"x-api-key", api_key.encode()))
             scope["headers"] = new_headers
-        
+
         await self.app(scope, receive, send)
+
 
 class ResponseCacheASGI:
     """
@@ -316,18 +324,18 @@ class ResponseCacheASGI:
     CACHEABLE_PATHS: Dict[str, int] = {
         "/validate/disposable-domains": 3600,  # 1 hour
         "/validate/provider-stats": 300,       # 5 minutes
-        "/health": 10,                         # 10 seconds
-        "/metrics/stats": 60,                  # 1 minute
+        "/health": 10,                          # 10 seconds
+        "/metrics/stats": 60,                   # 1 minute
     }
-    
+
     def __init__(self, app: ASGIApp):
         self.app = app
-    
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or scope["method"] != "GET":
             await self.app(scope, receive, send)
             return
-        
+
         path = scope.get("path", "/")
         
         # Check if path is cacheable
@@ -340,7 +348,7 @@ class ResponseCacheASGI:
         if not cache_ttl:
             await self.app(scope, receive, send)
             return
-            
+
         # Check if Redis is available in app state
         # In ASGI, app state is usually in scope['state'] if using Starlette/FastAPI
         redis = scope.get("state", {}).get("redis")
@@ -348,11 +356,11 @@ class ResponseCacheASGI:
             await self.app(scope, receive, send)
             return
 
-        # Generate cache key
+        # Generate cache key - SECURITY FIX: Using SHA-256 instead of MD5
         query_string = scope.get("query_string", b"").decode()
-        query_hash = hashlib.md5(query_string.encode()).hexdigest()
+        query_hash = hashlib.sha256(query_string.encode()).hexdigest()
         cache_key = f"http_cache:{path}:{query_hash}"
-        
+
         # Try cache
         try:
             cached = await redis.get(cache_key)
@@ -373,24 +381,27 @@ class ResponseCacheASGI:
                     "status": response_data["status_code"],
                     "headers": headers,
                 })
+                
                 await send({
                     "type": "http.response.body",
                     "body": response_data["body"].encode(),
                 })
+                
                 return
         except Exception as e:
             logger.debug(f"Cache check failed: {e}")
-            
+
         # Cache MISS - capture response
         response_body = b""
         response_status = 200
         response_headers = {}
-        
+
         async def send_with_cache(message):
             nonlocal response_body, response_status, response_headers
             
             if message["type"] == "http.response.start":
                 response_status = message["status"]
+                
                 # Capture headers
                 for k, v in message.get("headers", []):
                     response_headers[k.decode().lower()] = v.decode()
@@ -398,14 +409,14 @@ class ResponseCacheASGI:
                 # Add cache miss header
                 headers = MutableHeaders(scope=message)
                 headers["X-Cache"] = "MISS"
-                
+            
             elif message["type"] == "http.response.body":
                 response_body += message.get("body", b"")
-                
-            await send(message)
             
+            await send(message)
+
         await self.app(scope, receive, send_with_cache)
-        
+
         # Store in cache if successful
         if 200 <= response_status < 300:
             try:

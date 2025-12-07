@@ -24,7 +24,7 @@ class TestRateLimitEnums:
     
     def test_rate_limit_tier_values(self):
         """Test RateLimitTier enum values."""
-        from app.advanced_rate_limiting import RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitTier
         
         assert RateLimitTier.FREE == "free"
         assert RateLimitTier.PREMIUM == "premium"
@@ -37,7 +37,7 @@ class TestRateLimitRule:
     
     def test_rate_limit_rule_creation(self):
         """Test creating a rate limit rule."""
-        from app.advanced_rate_limiting import RateLimitRule
+        from app.rate_limiting.advanced_rate_limiting import RateLimitRule
         
         rule = RateLimitRule(requests=100, window=60)
         
@@ -47,7 +47,7 @@ class TestRateLimitRule:
     
     def test_rate_limit_rule_with_cost(self):
         """Test creating a rule with custom cost."""
-        from app.advanced_rate_limiting import RateLimitRule
+        from app.rate_limiting.advanced_rate_limiting import RateLimitRule
         
         rule = RateLimitRule(requests=50, window=60, cost=2)
         
@@ -60,7 +60,7 @@ class TestSlidingWindowRateLimiter:
     
     async def test_limiter_initialization(self, redis_mock):
         """Test limiter initialization."""
-        from app.advanced_rate_limiting import SlidingWindowRateLimiter
+        from app.rate_limiting.advanced_rate_limiting import SlidingWindowRateLimiter
         
         limiter = SlidingWindowRateLimiter(redis_mock)
         
@@ -68,7 +68,7 @@ class TestSlidingWindowRateLimiter:
     
     async def test_check_rate_limit_allows_request(self, redis_mock):
         """Test rate limit allows request under limit."""
-        from app.advanced_rate_limiting import SlidingWindowRateLimiter
+        from app.rate_limiting.advanced_rate_limiting import SlidingWindowRateLimiter
         
         # Mock eval return: [allowed, current, limit, remaining, reset_in]
         redis_mock.eval = AsyncMock(return_value=[1, 5, 10, 5, 60])
@@ -85,7 +85,7 @@ class TestSlidingWindowRateLimiter:
     
     async def test_check_rate_limit_blocks_request(self, redis_mock):
         """Test rate limit blocks request over limit."""
-        from app.advanced_rate_limiting import SlidingWindowRateLimiter
+        from app.rate_limiting.advanced_rate_limiting import SlidingWindowRateLimiter
         
         # Mock eval return: [allowed, current, limit, remaining, reset_in]
         redis_mock.eval = AsyncMock(return_value=[0, 11, 10, 0, 60])
@@ -102,7 +102,7 @@ class TestSlidingWindowRateLimiter:
     
     async def test_get_current_usage(self, redis_mock):
         """Test getting current usage."""
-        from app.advanced_rate_limiting import SlidingWindowRateLimiter
+        from app.rate_limiting.advanced_rate_limiting import SlidingWindowRateLimiter
         
         redis_mock.zcard = AsyncMock(return_value=7)
         redis_mock.zremrangebyscore = AsyncMock()
@@ -122,7 +122,7 @@ class TestRateLimitManager:
     
     async def test_manager_initialization(self, redis_mock):
         """Test manager initialization."""
-        from app.advanced_rate_limiting import RateLimitManager
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager
         
         manager = RateLimitManager(redis_mock)
         
@@ -131,7 +131,7 @@ class TestRateLimitManager:
     
     async def test_get_tier_from_request(self, redis_mock):
         """Test determining tier from request."""
-        from app.advanced_rate_limiting import RateLimitManager, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -147,7 +147,7 @@ class TestRateLimitManager:
     
     async def test_get_limit_rule(self, redis_mock):
         """Test getting limit rule for endpoint."""
-        from app.advanced_rate_limiting import RateLimitManager, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -162,7 +162,7 @@ class TestRateLimitManager:
     
     async def test_generate_rate_limit_key(self, redis_mock):
         """Test generating rate limit key."""
-        from app.advanced_rate_limiting import RateLimitManager
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager
         
         manager = RateLimitManager(redis_mock)
         
@@ -184,7 +184,7 @@ class TestRateLimitHeaders:
     @pytest.mark.asyncio
     async def test_add_rate_limit_headers(self):
         """Test adding rate limit headers to response."""
-        from app.advanced_rate_limiting import add_rate_limit_headers
+        from app.rate_limiting.advanced_rate_limiting import add_rate_limit_headers
         
         request = MagicMock()
         request.state = MagicMock()
@@ -211,7 +211,7 @@ class TestRateLimitStatistics:
     
     async def test_get_rate_limit_stats(self, redis_mock):
         """Test getting rate limit statistics."""
-        from app.advanced_rate_limiting import get_rate_limit_stats
+        from app.rate_limiting.advanced_rate_limiting import get_rate_limit_stats
         
         redis_mock.keys = AsyncMock(return_value=[b'rate_limit:user:123'])
         redis_mock.zcard = AsyncMock(return_value=5)
@@ -236,7 +236,7 @@ class TestRateLimiterErrorHandling:
     
     async def test_check_rate_limit_redis_error(self, redis_mock):
         """Test rate limit when Redis fails (fail open)"""
-        from app.advanced_rate_limiting import SlidingWindowRateLimiter
+        from app.rate_limiting.advanced_rate_limiting import SlidingWindowRateLimiter
         
         redis_mock.eval = AsyncMock(side_effect=Exception("Redis connection failed"))
         
@@ -253,7 +253,7 @@ class TestRateLimiterErrorHandling:
     
     async def test_get_current_usage_error(self, redis_mock):
         """Test get_current_usage when Redis fails"""
-        from app.advanced_rate_limiting import SlidingWindowRateLimiter
+        from app.rate_limiting.advanced_rate_limiting import SlidingWindowRateLimiter
         
         redis_mock.zremrangebyscore = AsyncMock(side_effect=Exception("Redis error"))
         
@@ -270,7 +270,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_get_tier_with_user_premium(self, redis_mock):
         """Test tier detection for premium user"""
-        from app.advanced_rate_limiting import RateLimitManager, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -286,7 +286,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_get_tier_with_user_enterprise(self, redis_mock):
         """Test tier detection for enterprise user"""
-        from app.advanced_rate_limiting import RateLimitManager, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -302,7 +302,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_get_tier_unknown_plan(self, redis_mock):
         """Test tier detection for unknown plan"""
-        from app.advanced_rate_limiting import RateLimitManager, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -318,7 +318,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_get_limit_rule_no_config(self, redis_mock):
         """Test getting rule when endpoint not configured"""
-        from app.advanced_rate_limiting import RateLimitManager, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -332,7 +332,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_get_rate_limit_key_with_user(self, redis_mock):
         """Test key generation with authenticated user"""
-        from app.advanced_rate_limiting import RateLimitManager
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager
         
         manager = RateLimitManager(redis_mock)
         
@@ -349,7 +349,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_check_rate_limit_no_rule_configured(self, redis_mock):
         """Test check_rate_limit when no rule is configured"""
-        from app.advanced_rate_limiting import RateLimitManager, ENDPOINT_LIMITS, RateLimitTier
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager, ENDPOINT_LIMITS, RateLimitTier
         
         manager = RateLimitManager(redis_mock)
         
@@ -373,7 +373,7 @@ class TestRateLimitManagerAdvanced:
     
     async def test_check_rate_limit_exceeds_limit(self, redis_mock):
         """Test check_rate_limit when limit is exceeded"""
-        from app.advanced_rate_limiting import RateLimitManager
+        from app.rate_limiting.advanced_rate_limiting import RateLimitManager
         from fastapi import HTTPException
         
         redis_mock.eval = AsyncMock(return_value=[0, 11, 10, 0, 60])
@@ -401,7 +401,7 @@ class TestRateLimitHeadersMiddleware:
     
     async def test_add_headers_with_metadata(self):
         """Test headers added when metadata exists"""
-        from app.advanced_rate_limiting import add_rate_limit_headers
+        from app.rate_limiting.advanced_rate_limiting import add_rate_limit_headers
         
         request = MagicMock()
         request.state = MagicMock()
@@ -424,7 +424,7 @@ class TestRateLimitHeadersMiddleware:
     
     async def test_add_headers_without_metadata(self):
         """Test headers when no rate limit metadata"""
-        from app.advanced_rate_limiting import add_rate_limit_headers
+        from app.rate_limiting.advanced_rate_limiting import add_rate_limit_headers
         
         request = MagicMock()
         request.state = MagicMock()
@@ -447,7 +447,7 @@ class TestRateLimitStatsAdvanced:
     
     async def test_get_stats_with_user_id(self, redis_mock):
         """Test getting stats for specific user"""
-        from app.advanced_rate_limiting import get_rate_limit_stats
+        from app.rate_limiting.advanced_rate_limiting import get_rate_limit_stats
         
         # Mock scan to return in one batch
         redis_mock.scan = AsyncMock(return_value=(0, [b'ratelimit:user:123:/api/test']))
@@ -460,7 +460,7 @@ class TestRateLimitStatsAdvanced:
     
     async def test_get_stats_error_handling(self, redis_mock):
         """Test stats with Redis error"""
-        from app.advanced_rate_limiting import get_rate_limit_stats
+        from app.rate_limiting.advanced_rate_limiting import get_rate_limit_stats
         
         redis_mock.scan = AsyncMock(side_effect=Exception("Redis error"))
         

@@ -89,7 +89,7 @@ opentelemetry-api==1.22.0
 opentelemetry-sdk==1.22.0
 opentelemetry-instrumentation-fastapi==0.43b0
 opentelemetry-instrumentation-redis==0.43b0
-opentelemetry-instrumentation-aiohttp-client==0.43b0
+opentelemetry-instrumentation-aiohttp-client==0.60b0
 opentelemetry-exporter-otlp==1.22.0
 # Note: Jaeger exporter is optional, use OTLP in production
 # opentelemetry-exporter-jaeger==1.21.0
